@@ -50,3 +50,6 @@ Thumbs.db
 
 # Local config
 *.local
+
+# Local launcher scripts (contain user-specific paths)
+run_app.bat
