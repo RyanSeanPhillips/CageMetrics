@@ -53,3 +53,7 @@ Thumbs.db
 
 # Local launcher scripts (contain user-specific paths)
 run_app.bat
+
+# PyInstaller build artifacts
+version_info.txt
+*.spec.bak

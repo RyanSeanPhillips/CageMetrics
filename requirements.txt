@@ -6,5 +6,9 @@ matplotlib>=3.7.0
 numpy>=1.24.0
 pandas>=2.0.0
 scipy>=1.10.0
-openpyxl>=3.1.0  # For reading Excel files (fallback)
+openpyxl>=3.1.0  # For reading/writing Excel files
 python-calamine>=0.1.0  # Fast Excel reader (recommended)
+requests>=2.28.0  # For telemetry and update checking
+
+# Build dependencies (optional, only needed for creating executable)
+pyinstaller>=6.0.0

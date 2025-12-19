@@ -271,10 +271,34 @@ class BehaviorAnalyzer:
                         cage_groups[cage_id] = []
                     cage_groups[cage_id].append(animal_id)
 
-        # Assign companions
+        # Assign companions and copy cagemate metadata
         for cage_id, animals in cage_groups.items():
             for animal_id in animals:
                 companions = [a for a in animals if a != animal_id]
                 if companions and animal_id in results:
-                    results[animal_id]['metadata']['companion'] = companions[0] if len(companions) == 1 else companions
+                    companion_id = companions[0] if len(companions) == 1 else companions
+                    results[animal_id]['metadata']['companion'] = companion_id
                     results[animal_id]['metadata']['cage_id'] = cage_id
+
+                    # Copy cagemate metadata (genotype, sex, and other fields)
+                    if isinstance(companion_id, list):
+                        # Multiple cagemates - use first one for metadata
+                        cagemate_id = companion_id[0]
+                    else:
+                        cagemate_id = companion_id
+
+                    if cagemate_id in results:
+                        cagemate_meta = results[cagemate_id]['metadata']
+                        # Copy key cagemate fields with cagemate_ prefix
+                        results[animal_id]['metadata']['cagemate_genotype'] = cagemate_meta.get('genotype', 'Unknown')
+                        results[animal_id]['metadata']['cagemate_sex'] = cagemate_meta.get('sex', 'Unknown')
+                        # Copy extended fields if present
+                        for field in ['treatment', 'dose', 'age', 'strain', 'weight']:
+                            if field in cagemate_meta:
+                                results[animal_id]['metadata'][f'cagemate_{field}'] = cagemate_meta[field]
+                    else:
+                        results[animal_id]['metadata']['cagemate_genotype'] = 'Unknown'
+                else:
+                    # No cagemate - single housed
+                    if animal_id in results:
+                        results[animal_id]['metadata']['cagemate_genotype'] = 'Single'
