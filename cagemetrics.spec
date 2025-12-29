@@ -23,6 +23,9 @@ added_files = [
     (os.path.join(spec_root, 'core'), 'core'),
     # Dialogs
     (os.path.join(spec_root, 'dialogs'), 'dialogs'),
+    # Icon and splash screen
+    (os.path.join(spec_root, 'cagemetrics.ico'), '.'),
+    (os.path.join(spec_root, 'splash.png'), '.'),
 ]
 
 # Add images folder if it exists
@@ -141,7 +144,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    # icon=os.path.join(spec_root, 'images', 'cagemetrics.ico'),  # Uncomment when icon exists
+    icon=os.path.join(spec_root, 'cagemetrics.ico'),
 )
 
 coll = COLLECT(

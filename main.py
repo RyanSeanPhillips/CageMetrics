@@ -19,10 +19,11 @@ from PyQt6.QtWidgets import (
     QScrollArea, QFrame, QStatusBar, QMessageBox, QDialog,
     QProgressBar, QSizePolicy, QScroller, QListWidget, QListWidgetItem,
     QAbstractItemView, QGroupBox, QTextEdit, QDialogButtonBox, QSplitter,
-    QCheckBox, QDoubleSpinBox, QPlainTextEdit, QToolTip, QComboBox
+    QCheckBox, QDoubleSpinBox, QPlainTextEdit, QToolTip, QComboBox,
+    QSplashScreen
 )
 from PyQt6.QtCore import Qt, QSettings, QTimer, pyqtSignal, QThread, QEvent
-from PyQt6.QtGui import QFont, QWheelEvent, QShortcut, QKeySequence
+from PyQt6.QtGui import QFont, QWheelEvent, QShortcut, QKeySequence, QIcon, QPixmap
 
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
@@ -4171,6 +4172,11 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(f"CageMetrics v{VERSION_STRING} - Behavioral Analysis")
         self.setMinimumSize(1200, 800)
 
+        # Set window icon
+        icon_path = Path(__file__).parent / "cagemetrics.ico"
+        if icon_path.exists():
+            self.setWindowIcon(QIcon(str(icon_path)))
+
         # Cache for update info (checked in background)
         self._update_info = None
 
@@ -4313,6 +4319,25 @@ def main():
     app.setApplicationName("CageMetrics")
     app.setOrganizationName("PhysioMetrics")
 
+    # Set application icon
+    icon_path = Path(__file__).parent / "cagemetrics.ico"
+    if icon_path.exists():
+        app.setWindowIcon(QIcon(str(icon_path)))
+
+    # Show splash screen
+    splash = None
+    splash_path = Path(__file__).parent / "splash.png"
+    if splash_path.exists():
+        splash_pixmap = QPixmap(str(splash_path))
+        splash = QSplashScreen(splash_pixmap)
+        splash.show()
+        splash.showMessage(
+            f"v{VERSION_STRING}",
+            Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignRight,
+            Qt.GlobalColor.gray
+        )
+        app.processEvents()
+
     app.setStyleSheet(DARK_STYLESHEET)
 
     # Show first launch dialog if needed
@@ -4330,6 +4355,11 @@ def main():
     telemetry.init_telemetry()
 
     window = MainWindow()
+
+    # Close splash and show main window
+    if splash:
+        splash.finish(window)
+
     window.show()
 
     sys.exit(app.exec())
