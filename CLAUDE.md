@@ -4,10 +4,10 @@
 
 CageMetrics is a PyQt6-based desktop application for analyzing behavioral data from home cage monitoring systems. It processes exported NPZ files from PhysioMetrics (or similar tools) and provides:
 
-- **Consolidation**: Combine multiple animal datasets into population-level summaries
-- **Filtering**: Filter animals by genotype, cagemate genotype, sex, treatment, and more
+- **Analyze**: Individual animal analysis with sleep bout detection
+- **Group**: Combine multiple animal datasets into population-level summaries with filtering
+- **Compare**: Compare multiple grouped datasets side-by-side with statistics
 - **Visualization**: Generate publication-ready figures with circadian time averages (CTAs)
-- **Comparison**: Compare multiple consolidated datasets side-by-side
 - **Statistics**: Automatic statistical analysis with t-tests, ANOVA, and Bonferroni correction
 
 ## Project Structure
@@ -32,9 +32,10 @@ CageMetrics/
 ## Key Classes
 
 ### main.py
-- `CageMetricsApp`: Main application window with tab interface
-- `ConsolidationTab`: Loads NPZ files, applies filters, generates consolidated previews
-- `ComparisonTab`: Loads consolidated NPZ files, compares datasets, generates statistics
+- `CageMetricsApp`: Main application window with tab interface (Analyze, Group, Compare)
+- `AnalysisTab`: Individual animal analysis with sleep bout detection
+- `ConsolidationTab`: Group tab - loads NPZ files, applies filters, generates consolidated previews
+- `ComparisonTab`: Compare tab - loads consolidated NPZ files, compares datasets, generates statistics
 
 ### core/consolidator.py
 - `Consolidator`: Combines multiple animal NPZ files into consolidated outputs
@@ -82,18 +83,20 @@ python run_debug.py
 
 ## Recent Features
 
-### Comparison Tab Statistics (Latest)
+### Compare Tab Statistics (Latest)
 - Checkbox to toggle statistics on/off
 - Welch's t-test for 2-group comparisons
 - ANOVA + Bonferroni-corrected pairwise t-tests for 3+ groups
 - Significance brackets on bar charts (*, **, ***)
 - Statistics summary page in PDF output
 - CSV export of all statistical results
+- Sleep analysis comparison page (histograms, CTA, bar charts)
 
-### Consolidation Tab
+### Group Tab
 - Advanced filtering by genotype, cagemate genotype, sex, treatment
 - Preview generation with scrollable figures
 - Full-tab scrolling (filters scroll out of view)
+- Sleep data aggregation for comparison
 
 ## Dependencies
 
@@ -113,5 +116,8 @@ Uses the same conda environment as PhysioMetrics (`plethapp`):
 
 - Dark theme by default, light mode option for publication figures
 - Error bars are white in dark mode for visibility
-- Comparison files save to `comparisons/` subfolder by default
+- Output folder structure:
+  - `analyzed/` - Individual animal exports from Analyze tab
+  - `grouped/` - Consolidated group files from Group tab
+  - `compared/` - Comparison outputs from Compare tab
 - Statistics CSV includes all pairwise comparisons with means, SEMs, p-values

@@ -64,12 +64,12 @@ class DataExporter:
         Returns:
             List of saved file paths
         """
-        # Create analysis folder next to data files
+        # Create analyzed folder next to data files
         if source_file:
             source_path = Path(source_file)
-            analysis_dir = source_path.parent / "analysis"
+            analysis_dir = source_path.parent / "analyzed"
         else:
-            analysis_dir = Path(output_dir) / "analysis"
+            analysis_dir = Path(output_dir) / "analyzed"
 
         analysis_dir.mkdir(parents=True, exist_ok=True)
 
@@ -629,12 +629,13 @@ class DataExporter:
                     ])
                     npz_data['sleep_bouts'] = bout_array
 
-                # Statistics as JSON
+                # Statistics as JSON (including quality_metrics)
                 stats_export = {
                     'light': _convert_to_serializable(sleep_analysis.get('light_stats', {})),
                     'dark': _convert_to_serializable(sleep_analysis.get('dark_stats', {})),
                     'total': _convert_to_serializable(sleep_analysis.get('total_stats', {})),
                     'per_day': _convert_to_serializable(sleep_analysis.get('per_day_stats', [])),
+                    'quality_metrics': _convert_to_serializable(sleep_analysis.get('quality_metrics', {})),
                 }
                 npz_data['sleep_stats_json'] = json.dumps(stats_export)
 

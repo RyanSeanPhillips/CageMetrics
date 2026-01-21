@@ -876,9 +876,9 @@ class AnalysisTab(QWidget):
         if not self.analyzed_data:
             return
 
-        # Confirm save - files will go to "analysis" folder next to source data
+        # Confirm save - files will go to "analyzed" folder next to source data
         source_dir = Path(self.current_files[0]).parent if self.current_files else Path.home()
-        analysis_dir = source_dir / "analysis"
+        analysis_dir = source_dir / "analyzed"
 
         # Get preview of files that will be created
         from core.data_exporter import DataExporter
@@ -1111,7 +1111,7 @@ class ConsolidateListDialog(QDialog):
 
 
 class ConsolidationTab(QWidget):
-    """Consolidation tab for combining multiple animal NPZ datasets."""
+    """Group tab for combining multiple animal NPZ datasets."""
 
     # Dark theme stylesheets
     LIST_STYLE = """
@@ -1959,20 +1959,20 @@ class ConsolidationTab(QWidget):
             n_animals=len(npz_paths)
         )
 
-        # Determine default save directory - create 'consolidated' subfolder
+        # Determine default save directory - create 'grouped' subfolder
         if self._scan_dir:
-            default_dir = Path(self._scan_dir) / "consolidated"
+            default_dir = Path(self._scan_dir) / "grouped"
         else:
             settings = QSettings("PhysioMetrics", "CageMetrics")
-            default_dir = Path(settings.value("consolidation_save_dir", str(Path.home()))) / "consolidated"
+            default_dir = Path(settings.value("consolidation_save_dir", str(Path.home()))) / "grouped"
 
-        # Create the consolidated subfolder if it doesn't exist
+        # Create the grouped subfolder if it doesn't exist
         default_dir.mkdir(parents=True, exist_ok=True)
 
         # Ask for output file (user can modify the suggested name)
         # Note: .npz, .xlsx, and .pdf will all be created with the same base name
         save_path, _ = QFileDialog.getSaveFileName(
-            self, "Save Consolidated Data (will create .npz, .xlsx, and .pdf)",
+            self, "Save Grouped Data (will create .npz, .xlsx, and .pdf)",
             str(default_dir / f"{suggested_name}.npz"),
             "NPZ Files (*.npz);;All Files (*)"
         )
@@ -3054,6 +3054,7 @@ class ConsolidationTab(QWidget):
                 sleep_analysis['dark_stats'] = stats.get('dark', {})
                 sleep_analysis['total_stats'] = stats.get('total', {})
                 sleep_analysis['per_day_stats'] = stats.get('per_day', [])
+                sleep_analysis['quality_metrics'] = stats.get('quality_metrics', {})
 
                 # Reconstruct bouts from structured array
                 if 'sleep_bouts' in data:
@@ -3265,7 +3266,7 @@ class ComparisonTab(QWidget):
         content_layout.addWidget(header)
 
         desc = QLabel(
-            "Load consolidated NPZ files (created in the Consolidation tab) to compare "
+            "Load consolidated NPZ files (created in the Group tab) to compare "
             "CTAs and statistics across different experimental groups."
         )
         desc.setWordWrap(True)
@@ -3853,24 +3854,24 @@ class ComparisonTab(QWidget):
         self._update_buttons()
 
     def on_add_dataset(self):
-        """Add consolidated NPZ files to compare."""
+        """Add grouped NPZ files to compare."""
         settings = QSettings("PhysioMetrics", "CageMetrics")
 
-        # Try to default to a 'consolidated' subfolder if one exists
+        # Try to default to a 'grouped' subfolder if one exists
         last_dir = settings.value("comparison_load_dir", "")
         if not last_dir:
-            # Check if consolidation_save_dir has a consolidated folder
+            # Check if consolidation_save_dir has a grouped folder
             consolidation_dir = settings.value("consolidation_save_dir", str(Path.home()))
-            consolidated_path = Path(consolidation_dir)
-            if consolidated_path.exists():
-                last_dir = str(consolidated_path)
+            grouped_path = Path(consolidation_dir)
+            if grouped_path.exists():
+                last_dir = str(grouped_path)
             else:
                 last_dir = str(Path.home())
 
         file_paths, _ = QFileDialog.getOpenFileNames(
-            self, "Select Consolidated NPZ Files",
+            self, "Select Grouped NPZ Files",
             last_dir,
-            "CageMetrics Consolidated (CageMetrics_Consolidated*.npz);;All NPZ Files (*.npz);;All Files (*)"
+            "All NPZ Files (*.npz);;All Files (*)"
         )
 
         if not file_paths:
@@ -3893,7 +3894,7 @@ class ComparisonTab(QWidget):
                 QMessageBox.warning(
                     self, "Invalid File",
                     f"'{Path(path).name}' is not a valid consolidated NPZ file.\n\n"
-                    "Only NPZ files created by the Consolidation tab can be compared."
+                    "Only NPZ files created by the Group tab can be compared."
                 )
                 continue
 
@@ -4025,23 +4026,23 @@ class ComparisonTab(QWidget):
         settings = QSettings("PhysioMetrics", "CageMetrics")
         last_dir = settings.value("comparison_save_dir", str(Path.home()))
 
-        # Create comparisons subfolder
-        comparisons_dir = Path(last_dir) / "comparisons"
-        comparisons_dir.mkdir(exist_ok=True)
+        # Create compared subfolder
+        compared_dir = Path(last_dir) / "compared"
+        compared_dir.mkdir(exist_ok=True)
 
-        # Ask for save location (default to comparisons subfolder)
+        # Ask for save location (default to compared subfolder)
         file_path, selected_filter = QFileDialog.getSaveFileName(
             self, "Save Comparison",
-            str(comparisons_dir / "Comparison"),
+            str(compared_dir / "Comparison"),
             "PDF Files (*.pdf);;All Files (*)"
         )
 
         if not file_path:
             return
 
-        # Save the parent of the comparisons folder as the base dir
+        # Save the parent of the compared folder as the base dir
         save_path = Path(file_path)
-        if save_path.parent.name == "comparisons":
+        if save_path.parent.name == "compared":
             settings.setValue("comparison_save_dir", str(save_path.parent.parent))
         else:
             settings.setValue("comparison_save_dir", str(save_path.parent))
@@ -4248,17 +4249,17 @@ class MainWindow(QMainWindow):
         self.main_tabs = QTabWidget()
         self.main_tabs.setDocumentMode(True)
 
-        # Analysis tab
+        # Analyze tab (individual animal analysis)
         self.analysis_tab = AnalysisTab(self)
-        self.main_tabs.addTab(self.analysis_tab, "Analysis")
+        self.main_tabs.addTab(self.analysis_tab, "Analyze")
 
-        # Consolidation tab
+        # Group tab (consolidate multiple animals)
         self.consolidation_tab = ConsolidationTab(self)
-        self.main_tabs.addTab(self.consolidation_tab, "Consolidation")
+        self.main_tabs.addTab(self.consolidation_tab, "Group")
 
-        # Comparison tab
+        # Compare tab (compare consolidated groups)
         self.comparison_tab = ComparisonTab(self)
-        self.main_tabs.addTab(self.comparison_tab, "Comparison")
+        self.main_tabs.addTab(self.comparison_tab, "Compare")
 
         main_layout.addWidget(self.main_tabs)
 

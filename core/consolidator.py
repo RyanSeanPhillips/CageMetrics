@@ -271,8 +271,128 @@ class Consolidator:
             data[f'{key_base}_dark_means'] = np.array(dark_means)
             data[f'{key_base}_light_means'] = np.array(light_means)
 
+        # Aggregate and save sleep data if available
+        self._write_sleep_data_to_npz(data, animals)
+
         # Save NPZ
         np.savez_compressed(str(npz_path), **data)
+
+    def _write_sleep_data_to_npz(self, data: Dict, animals: List[Dict]):
+        """
+        Aggregate sleep data from all animals and add to NPZ data dict.
+
+        Saves:
+        - Per-animal arrays for bar charts with statistics
+        - Pooled bout durations for histograms
+        - Sleep parameters metadata
+        """
+        # Collect animals with sleep data
+        animals_with_sleep = [a for a in animals if a.get('sleep_analysis')]
+
+        if not animals_with_sleep:
+            return
+
+        n_animals = len(animals_with_sleep)
+
+        # Per-animal metric arrays (for bar charts and statistics)
+        total_minutes_light = []
+        total_minutes_dark = []
+        bout_count_light = []
+        bout_count_dark = []
+        mean_duration_light = []
+        mean_duration_dark = []
+        frag_index_light = []
+        frag_index_dark = []
+        percent_time_light = []
+        percent_time_dark = []
+
+        # Quality metrics (per animal)
+        long_bout_pct_light = []
+        long_bout_pct_dark = []
+        light_dark_ratio = []
+        transition_rate = []
+
+        # Pooled bout durations (for histograms)
+        all_bout_durations_light = []
+        all_bout_durations_dark = []
+
+        # Collect sleep parameters (use first animal's settings)
+        first_sleep = animals_with_sleep[0].get('sleep_analysis', {})
+        threshold = first_sleep.get('threshold', 0.5)
+        bin_width = first_sleep.get('bin_width', 5.0)
+
+        for animal in animals_with_sleep:
+            sleep = animal.get('sleep_analysis', {})
+            light_stats = sleep.get('light_stats', {})
+            dark_stats = sleep.get('dark_stats', {})
+
+            # Total sleep minutes
+            total_minutes_light.append(light_stats.get('total_minutes', 0))
+            total_minutes_dark.append(dark_stats.get('total_minutes', 0))
+
+            # Bout counts
+            l_bouts = light_stats.get('bout_count', 0)
+            d_bouts = dark_stats.get('bout_count', 0)
+            bout_count_light.append(l_bouts)
+            bout_count_dark.append(d_bouts)
+
+            # Mean bout duration
+            mean_duration_light.append(light_stats.get('mean_duration', 0))
+            mean_duration_dark.append(dark_stats.get('mean_duration', 0))
+
+            # Fragmentation index (bouts per hour of sleep)
+            l_sleep_hrs = light_stats.get('total_minutes', 0) / 60
+            d_sleep_hrs = dark_stats.get('total_minutes', 0) / 60
+            frag_index_light.append(l_bouts / l_sleep_hrs if l_sleep_hrs > 0 else 0)
+            frag_index_dark.append(d_bouts / d_sleep_hrs if d_sleep_hrs > 0 else 0)
+
+            # Percent time asleep
+            percent_time_light.append(light_stats.get('percent_time', 0))
+            percent_time_dark.append(dark_stats.get('percent_time', 0))
+
+            # Quality metrics
+            qm = sleep.get('quality_metrics', {})
+            long_bout_pct_light.append(qm.get('long_bout_pct_light', 0))
+            long_bout_pct_dark.append(qm.get('long_bout_pct_dark', 0))
+            light_dark_ratio.append(qm.get('light_dark_ratio', 0))
+            transition_rate.append(qm.get('transition_rate', 0))
+
+            # Pool bout durations for histograms
+            bout_dur_light = sleep.get('bout_durations_light', np.array([]))
+            bout_dur_dark = sleep.get('bout_durations_dark', np.array([]))
+            if len(bout_dur_light) > 0:
+                all_bout_durations_light.extend(bout_dur_light.tolist())
+            if len(bout_dur_dark) > 0:
+                all_bout_durations_dark.extend(bout_dur_dark.tolist())
+
+        # Store per-animal arrays
+        data['sleep_total_minutes_light'] = np.array(total_minutes_light)
+        data['sleep_total_minutes_dark'] = np.array(total_minutes_dark)
+        data['sleep_bout_count_light'] = np.array(bout_count_light)
+        data['sleep_bout_count_dark'] = np.array(bout_count_dark)
+        data['sleep_mean_duration_light'] = np.array(mean_duration_light)
+        data['sleep_mean_duration_dark'] = np.array(mean_duration_dark)
+        data['sleep_frag_index_light'] = np.array(frag_index_light)
+        data['sleep_frag_index_dark'] = np.array(frag_index_dark)
+        data['sleep_percent_time_light'] = np.array(percent_time_light)
+        data['sleep_percent_time_dark'] = np.array(percent_time_dark)
+
+        # Store pooled bout durations
+        data['sleep_bout_durations_light'] = np.array(all_bout_durations_light)
+        data['sleep_bout_durations_dark'] = np.array(all_bout_durations_dark)
+
+        # Store quality metrics (per-animal arrays)
+        data['sleep_long_bout_pct_light'] = np.array(long_bout_pct_light)
+        data['sleep_long_bout_pct_dark'] = np.array(long_bout_pct_dark)
+        data['sleep_light_dark_ratio'] = np.array(light_dark_ratio)
+        data['sleep_transition_rate'] = np.array(transition_rate)
+
+        # Store metadata
+        data['sleep_n_animals'] = n_animals
+        data['sleep_parameters_json'] = json.dumps({
+            'threshold': threshold,
+            'bin_width': bin_width
+        })
 
     def _clean_metric_name(self, metric_name: str) -> str:
         """Clean metric name for use as NPZ key."""
@@ -309,15 +429,74 @@ class Consolidator:
                 if daily_key in data:
                     metrics[metric_name]['daily'] = data[daily_key]
 
-            return {
+            result = {
                 'metadata': metadata,
                 'quality': quality,
                 'metric_names': metric_names,
                 'metrics': metrics
             }
 
+            # Extract sleep analysis data if present
+            sleep_data = self._extract_sleep_data(data)
+            if sleep_data:
+                result['sleep_analysis'] = sleep_data
+
+            return result
+
         except Exception as e:
             print(f"Error loading {path}: {e}")
+            return None
+
+    def _extract_sleep_data(self, data) -> Optional[Dict[str, Any]]:
+        """
+        Extract sleep analysis data from an individual NPZ file.
+
+        Args:
+            data: Loaded NPZ file data
+
+        Returns:
+            Dictionary with sleep stats or None if no sleep data
+        """
+        # Check if sleep data exists
+        if 'sleep_stats_json' not in data:
+            return None
+
+        try:
+            stats = json.loads(str(data['sleep_stats_json']))
+
+            sleep_data = {
+                'threshold': float(data.get('sleep_threshold', 0.5)),
+                'bin_width': float(data.get('sleep_bin_width', 5.0)),
+                'n_days': int(data.get('sleep_n_days', 0)),
+                'light_stats': stats.get('light', {}),
+                'dark_stats': stats.get('dark', {}),
+                'total_stats': stats.get('total', {}),
+                'quality_metrics': stats.get('quality_metrics', {}),
+            }
+
+            # Extract bout durations for histogram aggregation
+            if 'sleep_bouts' in data:
+                bouts = data['sleep_bouts']
+                # bouts is structured array: (day, bout_num, start_minute, end_minute, duration, phase)
+                # phase: 0 = light, 1 = dark
+                light_durations = []
+                dark_durations = []
+                for bout in bouts:
+                    duration = float(bout['duration'])
+                    if bout['phase'] == 0:
+                        light_durations.append(duration)
+                    else:
+                        dark_durations.append(duration)
+                sleep_data['bout_durations_light'] = np.array(light_durations)
+                sleep_data['bout_durations_dark'] = np.array(dark_durations)
+            else:
+                sleep_data['bout_durations_light'] = np.array([])
+                sleep_data['bout_durations_dark'] = np.array([])
+
+            return sleep_data
+
+        except Exception as e:
+            print(f"Error extracting sleep data: {e}")
             return None
 
     def _write_summary_tab(self, writer: pd.ExcelWriter, animals: List[Dict]):

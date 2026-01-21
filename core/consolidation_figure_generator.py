@@ -1090,81 +1090,109 @@ class ConsolidationFigureGenerator:
         """
         Draw combined histogram with light/dark overlay across all animals.
 
+        Uses per-animal, per-day normalization to prevent groups with more data
+        from dominating. Plots as continuous lines with SEM shading.
+
         Args:
             ax: Matplotlib axes
             experiments: List of experiment data
             weighted: If True, show time-weighted (duration × count) instead of count
             show_title: If True, show the title
         """
-        # Collect all bouts
-        light_durations = []
-        dark_durations = []
         bin_width = 5.0
+        fixed_max_dur = 120.0  # Fixed max duration for consistent bins across comparisons
+        bins = np.arange(0, fixed_max_dur + bin_width, bin_width)
+        n_bins = len(bins) - 1
+        bin_centers = (bins[:-1] + bins[1:]) / 2
+
+        # Collect per-animal, per-day histograms
+        # Then average within each animal, then compute mean±SEM across animals
+        animal_light_hists = []  # List of per-animal mean histograms
+        animal_dark_hists = []
 
         for exp in experiments:
             sleep_data = exp.get('sleep_analysis', {})
             bouts = sleep_data.get('bouts', [])
-            for bout in bouts:
-                if bout.phase == 'light':
-                    light_durations.append(bout.duration)
-                else:
-                    dark_durations.append(bout.duration)
+            n_days = sleep_data.get('n_days', 1)
 
-        if not light_durations and not dark_durations:
+            if not bouts:
+                continue
+
+            # Compute per-day histograms for this animal
+            light_day_hists = []
+            dark_day_hists = []
+
+            for day_idx in range(n_days):
+                day_bouts = [b for b in bouts if b.day == day_idx]
+                light_bouts = [b for b in day_bouts if b.phase == 'light']
+                dark_bouts = [b for b in day_bouts if b.phase == 'dark']
+
+                if weighted:
+                    # Time-weighted histogram (sum of durations in each bin)
+                    light_hist = np.zeros(n_bins)
+                    dark_hist = np.zeros(n_bins)
+                    for b in light_bouts:
+                        bin_idx = min(np.searchsorted(bins[1:], b.duration), n_bins - 1)
+                        light_hist[bin_idx] += b.duration
+                    for b in dark_bouts:
+                        bin_idx = min(np.searchsorted(bins[1:], b.duration), n_bins - 1)
+                        dark_hist[bin_idx] += b.duration
+                else:
+                    # Count histogram
+                    light_durs = [b.duration for b in light_bouts]
+                    dark_durs = [b.duration for b in dark_bouts]
+                    light_hist, _ = np.histogram(light_durs, bins=bins) if light_durs else (np.zeros(n_bins), bins)
+                    dark_hist, _ = np.histogram(dark_durs, bins=bins) if dark_durs else (np.zeros(n_bins), bins)
+
+                light_day_hists.append(light_hist)
+                dark_day_hists.append(dark_hist)
+
+            # Average across days for this animal (per-day normalization)
+            if light_day_hists:
+                animal_light_mean = np.mean(np.array(light_day_hists), axis=0)
+                animal_light_hists.append(animal_light_mean)
+            if dark_day_hists:
+                animal_dark_mean = np.mean(np.array(dark_day_hists), axis=0)
+                animal_dark_hists.append(animal_dark_mean)
+
+        if not animal_light_hists and not animal_dark_hists:
             ax.text(0.5, 0.5, "No bout data", ha='center', va='center',
                     color=self.TEXT_COLOR, fontsize=10, transform=ax.transAxes)
             ax.set_xticks([])
             ax.set_yticks([])
             return
 
-        # Compute bins
-        all_durations = light_durations + dark_durations
-        max_dur = max(all_durations) if all_durations else 60
-        max_dur = np.ceil(max_dur / bin_width) * bin_width + bin_width
-        bins = np.arange(0, max_dur + bin_width, bin_width)
-        bin_centers = (bins[:-1] + bins[1:]) / 2
+        # Compute mean ± SEM across animals
+        # Light phase
+        if animal_light_hists:
+            light_matrix = np.array(animal_light_hists)
+            light_mean = np.mean(light_matrix, axis=0)
+            light_sem = np.std(light_matrix, axis=0) / np.sqrt(len(animal_light_hists)) if len(animal_light_hists) > 1 else np.zeros(n_bins)
 
-        if weighted:
-            # Time-weighted: compute total time in each bin (sum of durations)
-            light_weights = np.zeros(len(bins) - 1)
-            dark_weights = np.zeros(len(bins) - 1)
+            # Plot as continuous line with SEM shading
+            ax.plot(bin_centers, light_mean, color='#f0c040', linewidth=1.5, label='Light', zorder=3)
+            ax.fill_between(bin_centers, light_mean - light_sem, light_mean + light_sem,
+                           color='#f0c040', alpha=0.3, zorder=2)
 
-            for dur in light_durations:
-                bin_idx = np.searchsorted(bins[1:], dur)
-                if bin_idx < len(light_weights):
-                    light_weights[bin_idx] += dur
+        # Dark phase
+        if animal_dark_hists:
+            dark_matrix = np.array(animal_dark_hists)
+            dark_mean = np.mean(dark_matrix, axis=0)
+            dark_sem = np.std(dark_matrix, axis=0) / np.sqrt(len(animal_dark_hists)) if len(animal_dark_hists) > 1 else np.zeros(n_bins)
 
-            for dur in dark_durations:
-                bin_idx = np.searchsorted(bins[1:], dur)
-                if bin_idx < len(dark_weights):
-                    dark_weights[bin_idx] += dur
+            ax.plot(bin_centers, dark_mean, color='#6a6a6a', linewidth=1.5, label='Dark', zorder=3)
+            ax.fill_between(bin_centers, dark_mean - dark_sem, dark_mean + dark_sem,
+                           color='#6a6a6a', alpha=0.3, zorder=2)
 
-            # Plot as bars
-            bar_width = bin_width * 0.4
-            if np.any(light_weights > 0):
-                ax.bar(bin_centers - bar_width/2, light_weights, bar_width,
-                       alpha=0.7, color='#f0c040', edgecolor='white', linewidth=0.5, label='Light')
-            if np.any(dark_weights > 0):
-                ax.bar(bin_centers + bar_width/2, dark_weights, bar_width,
-                       alpha=0.7, color='#4a4a4a', edgecolor='white', linewidth=0.5, label='Dark')
-
-            ax.set_ylabel('Time (min)', fontsize=7, color=self.TEXT_COLOR)
-            if show_title:
-                ax.set_title("Time in Bouts", fontsize=9, color=self.TEXT_COLOR, fontweight='bold', pad=5)
-        else:
-            # Standard count histogram
-            if light_durations:
-                ax.hist(light_durations, bins=bins, alpha=0.7, color='#f0c040',
-                        edgecolor='white', linewidth=0.5, label='Light')
-            if dark_durations:
-                ax.hist(dark_durations, bins=bins, alpha=0.7, color='#4a4a4a',
-                        edgecolor='white', linewidth=0.5, label='Dark')
-
-            ax.set_ylabel('Count', fontsize=7, color=self.TEXT_COLOR)
-            if show_title:
-                ax.set_title("Bout Count", fontsize=9, color=self.TEXT_COLOR, fontweight='bold', pad=5)
+        # Formatting
+        ylabel = 'Time (min/day)' if weighted else 'Count/day'
+        ax.set_ylabel(ylabel, fontsize=7, color=self.TEXT_COLOR)
+        if show_title:
+            title = "Time in Bouts" if weighted else "Bout Count"
+            ax.set_title(title, fontsize=9, color=self.TEXT_COLOR, fontweight='bold', pad=5)
 
         ax.set_xlabel('Duration (min)', fontsize=7, color=self.TEXT_COLOR)
+        ax.set_xlim(0, fixed_max_dur)
         ax.tick_params(colors=self.TEXT_COLOR, labelsize=6)
         ax.legend(loc='upper right', fontsize=5, facecolor=self.BG_COLOR,
                   edgecolor=self.GRID_COLOR, labelcolor=self.TEXT_COLOR)

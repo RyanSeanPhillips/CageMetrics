@@ -156,6 +156,11 @@ class ComparisonFigureGenerator:
             fig_stats = self.create_statistics_summary_page(datasets)
             pages.append(("Statistical Analysis", fig_stats))
 
+        # Sleep analysis comparison page (if any datasets have sleep data)
+        fig_sleep = self.create_sleep_comparison_page(datasets)
+        if fig_sleep is not None:
+            pages.append(("Sleep Analysis Comparison", fig_sleep))
+
         return pages
 
     def _get_common_metrics(self, datasets: List[Dict[str, Any]]) -> List[str]:
@@ -871,6 +876,531 @@ class ComparisonFigureGenerator:
 
         return fig
 
+    def create_sleep_comparison_page(self, datasets: List[Dict[str, Any]]) -> Optional[Figure]:
+        """
+        Create sleep analysis comparison page for multiple datasets.
+
+        Layout: 3 rows
+        Row 0: Light Bout Count | Dark Bout Count | Sleep CTA
+        Row 1: Light Time-in-Bouts | Dark Time-in-Bouts | L/D Ratio
+        Row 2: 2x3 Bar Chart Grid (Total Sleep, Bout Count, Frag Index, Mean Duration, Sleep %)
+
+        Returns:
+            Figure or None if no datasets have sleep data
+        """
+        # Check if any datasets have sleep data
+        datasets_with_sleep = [ds for ds in datasets if ds.get('has_sleep_data', False)]
+
+        if not datasets_with_sleep:
+            return None
+
+        fig = Figure(figsize=(11, 10), facecolor=self.BG_COLOR)
+        fig.suptitle("Sleep Analysis Comparison",
+                     fontsize=14, fontweight='bold', color=self.TEXT_COLOR, y=0.98)
+
+        # Create grid: 3 rows
+        # Row 0: Light histograms + CTA
+        # Row 1: Dark histograms + L/D ratio
+        # Row 2: 2x3 bar chart grid
+        gs = GridSpec(3, 3, figure=fig, height_ratios=[1, 1, 1.2],
+                      hspace=0.35, wspace=0.25, left=0.06, right=0.94, top=0.93, bottom=0.05)
+
+        # === ROW 0: Light Phase ===
+        # Light Bout Count Histogram
+        ax_light_count = fig.add_subplot(gs[0, 0])
+        ax_light_count.set_facecolor(self.BG_COLOR)
+        self._draw_overlaid_bout_histogram(ax_light_count, datasets_with_sleep, weighted=False, phase='light')
+
+        # Light Time-in-Bouts Histogram
+        ax_light_time = fig.add_subplot(gs[0, 1])
+        ax_light_time.set_facecolor(self.BG_COLOR)
+        self._draw_overlaid_bout_histogram(ax_light_time, datasets_with_sleep, weighted=True, phase='light')
+
+        # Sleep CTA Comparison (36hr view)
+        ax_cta = fig.add_subplot(gs[0, 2])
+        ax_cta.set_facecolor(self.BG_COLOR)
+        self._draw_sleep_cta_comparison(ax_cta, datasets)
+
+        # === ROW 1: Dark Phase ===
+        # Dark Bout Count Histogram
+        ax_dark_count = fig.add_subplot(gs[1, 0])
+        ax_dark_count.set_facecolor(self.BG_COLOR)
+        self._draw_overlaid_bout_histogram(ax_dark_count, datasets_with_sleep, weighted=False, phase='dark')
+
+        # Dark Time-in-Bouts Histogram
+        ax_dark_time = fig.add_subplot(gs[1, 1])
+        ax_dark_time.set_facecolor(self.BG_COLOR)
+        self._draw_overlaid_bout_histogram(ax_dark_time, datasets_with_sleep, weighted=True, phase='dark')
+
+        # L/D Ratio comparison
+        ax_ld = fig.add_subplot(gs[1, 2])
+        ax_ld.set_facecolor(self.BG_COLOR)
+        self._draw_sleep_ld_ratio_comparison(ax_ld, datasets_with_sleep)
+
+        # === ROW 2: Bar chart grid ===
+        from matplotlib.gridspec import GridSpecFromSubplotSpec
+        gs_bars = GridSpecFromSubplotSpec(2, 3, subplot_spec=gs[2, :],
+                                          wspace=0.3, hspace=0.4)
+
+        # Bar 1: Total Sleep (minutes)
+        ax_bar1 = fig.add_subplot(gs_bars[0, 0])
+        ax_bar1.set_facecolor(self.BG_COLOR)
+        self._draw_sleep_bar_comparison(ax_bar1, datasets_with_sleep, 'sleep_total_minutes',
+                                        'Total Sleep (min)', show_legend=True)
+
+        # Bar 2: Bout Count
+        ax_bar2 = fig.add_subplot(gs_bars[0, 1])
+        ax_bar2.set_facecolor(self.BG_COLOR)
+        self._draw_sleep_bar_comparison(ax_bar2, datasets_with_sleep, 'sleep_bout_count',
+                                        'Bout Count', show_legend=False)
+
+        # Bar 3: Fragmentation Index
+        ax_bar3 = fig.add_subplot(gs_bars[0, 2])
+        ax_bar3.set_facecolor(self.BG_COLOR)
+        self._draw_sleep_bar_comparison(ax_bar3, datasets_with_sleep, 'sleep_frag_index',
+                                        'Frag Index', show_legend=False)
+
+        # Bar 4: Mean Bout Duration
+        ax_bar4 = fig.add_subplot(gs_bars[1, 0])
+        ax_bar4.set_facecolor(self.BG_COLOR)
+        self._draw_sleep_bar_comparison(ax_bar4, datasets_with_sleep, 'sleep_mean_duration',
+                                        'Mean Duration (min)', show_legend=False)
+
+        # Bar 5: Sleep %
+        ax_bar5 = fig.add_subplot(gs_bars[1, 1])
+        ax_bar5.set_facecolor(self.BG_COLOR)
+        self._draw_sleep_bar_comparison(ax_bar5, datasets_with_sleep, 'sleep_percent_time',
+                                        'Sleep %', show_legend=False)
+
+        # Bar 6: empty or additional metric
+        ax_bar6 = fig.add_subplot(gs_bars[1, 2])
+        ax_bar6.set_facecolor(self.BG_COLOR)
+        ax_bar6.axis('off')  # Empty slot
+
+        return fig
+
+    def _draw_overlaid_bout_histogram(self, ax, datasets: List[Dict[str, Any]], weighted: bool = False,
+                                       phase: str = 'all'):
+        """
+        Draw overlaid bout duration histograms from multiple datasets.
+
+        Uses per-animal normalization (mean histogram per animal) with per-dataset
+        mean line and SEM shading.
+
+        Args:
+            ax: Matplotlib axes
+            datasets: List of dataset dicts with sleep data
+            weighted: If True, show time-in-bouts (weighted by duration); if False, show counts
+            phase: 'light', 'dark', or 'all' - which phase to plot
+        """
+        bin_width = 5.0
+        fixed_max_dur = 120.0  # Fixed max duration for consistent bins
+        bins = np.arange(0, fixed_max_dur + bin_width, bin_width)
+        n_bins = len(bins) - 1
+        bin_centers = (bins[:-1] + bins[1:]) / 2
+
+        has_data = False
+
+        # Draw histogram line with SEM for each dataset
+        for ds_idx, ds in enumerate(datasets):
+            color = self.DATASET_COLORS[ds_idx % len(self.DATASET_COLORS)]
+            label = self._get_dataset_label(ds)
+
+            # Get durations for the specified phase
+            if phase == 'light':
+                durations = ds.get('sleep_bout_durations_light', np.array([]))
+            elif phase == 'dark':
+                durations = ds.get('sleep_bout_durations_dark', np.array([]))
+            else:  # 'all'
+                light_dur = ds.get('sleep_bout_durations_light', np.array([]))
+                dark_dur = ds.get('sleep_bout_durations_dark', np.array([]))
+                durations = np.concatenate([light_dur, dark_dur]) if len(light_dur) > 0 or len(dark_dur) > 0 else np.array([])
+
+            if len(durations) == 0:
+                continue
+
+            has_data = True
+
+            # Get number of animals from the dataset
+            n_animals = ds.get('sleep_n_animals', 1)
+
+            # Compute histogram (normalized by number of animals for per-animal average)
+            if weighted:
+                # Time-weighted: sum durations in each bin, then divide by n_animals
+                hist_vals = np.zeros(n_bins)
+                for dur in durations:
+                    bin_idx = min(np.searchsorted(bins[1:], dur), n_bins - 1)
+                    hist_vals[bin_idx] += dur
+                hist_vals = hist_vals / n_animals  # Per-animal average
+            else:
+                # Count histogram, normalized by n_animals
+                hist_vals, _ = np.histogram(durations, bins=bins)
+                hist_vals = hist_vals.astype(float) / n_animals  # Per-animal average
+
+            # Plot as continuous line
+            ax.plot(bin_centers, hist_vals, color=color, linewidth=1.5, label=label, zorder=3, alpha=0.9)
+
+            # Add light shading under the curve
+            ax.fill_between(bin_centers, 0, hist_vals, color=color, alpha=0.2, zorder=2)
+
+        if not has_data:
+            ax.text(0.5, 0.5, "No bout data", ha='center', va='center',
+                    color=self.TEXT_COLOR, fontsize=10, transform=ax.transAxes)
+            ax.set_xticks([])
+            ax.set_yticks([])
+            return
+
+        # Styling
+        phase_label = phase.capitalize() if phase != 'all' else ''
+        title_base = 'Time in Bouts' if weighted else 'Bout Count'
+        title = f'{phase_label} {title_base}' if phase_label else title_base
+        ax.set_title(title, fontsize=9, color=self.TEXT_COLOR, fontweight='bold', pad=5)
+        ax.set_xlabel('Duration (min)', fontsize=7, color=self.TEXT_COLOR)
+        ylabel = 'Time (min/animal)' if weighted else 'Count/animal'
+        ax.set_ylabel(ylabel, fontsize=7, color=self.TEXT_COLOR)
+        ax.set_xlim(0, fixed_max_dur)
+        ax.tick_params(colors=self.TEXT_COLOR, labelsize=6)
+
+        # Legend
+        legend = ax.legend(loc='upper right', fontsize=5, facecolor=self.BG_COLOR,
+                          edgecolor=self.GRID_COLOR, labelcolor=self.TEXT_COLOR)
+        if legend:
+            legend.set_draggable(True)
+
+        for spine in ax.spines.values():
+            spine.set_color(self.GRID_COLOR)
+
+    def _draw_sleep_cta_comparison(self, ax, datasets: List[Dict[str, Any]]):
+        """
+        Draw overlaid Sleep CTA comparison (using Sleeping % metric if available).
+
+        Args:
+            ax: Matplotlib axes
+            datasets: List of dataset dicts
+        """
+        # Light/dark phase background (36hr)
+        ax.axvspan(0, 12, facecolor=self.LIGHT_PHASE_COLOR, zorder=0)
+        ax.axvspan(12, 24, facecolor=self.DARK_PHASE_COLOR, zorder=0)
+        ax.axvspan(24, 36, facecolor=self.LIGHT_PHASE_COLOR, zorder=0)
+
+        x_hours_36h = np.arange(2160) / 60
+
+        has_data = False
+        for ds_idx, ds in enumerate(datasets):
+            color = self.DATASET_COLORS[ds_idx % len(self.DATASET_COLORS)]
+            label = self._get_dataset_label(ds)
+
+            # Try to get Sleeping % CTA
+            grand_cta = ds.get('Sleeping_pct_grand_cta', None)
+            grand_sem = ds.get('Sleeping_pct_grand_sem', None)
+
+            if grand_cta is None or len(grand_cta) != self.MINUTES_PER_DAY:
+                continue
+
+            has_data = True
+
+            # Apply smoothing
+            smoothed_cta = self._smooth_data(grand_cta)
+
+            # Extend to 36 hours
+            cta_36h = np.concatenate([smoothed_cta, smoothed_cta[:720]])
+
+            # Plot mean line
+            ax.plot(x_hours_36h, cta_36h, color=color, linewidth=1.2, label=label, alpha=0.9)
+
+            # Plot SEM band
+            if grand_sem is not None and len(grand_sem) == self.MINUTES_PER_DAY:
+                smoothed_sem = self._smooth_data(grand_sem)
+                sem_36h = np.concatenate([smoothed_sem, smoothed_sem[:720]])
+                ax.fill_between(x_hours_36h, cta_36h - sem_36h, cta_36h + sem_36h,
+                               color=color, alpha=self.SEM_ALPHA)
+
+        if not has_data:
+            ax.text(0.5, 0.5, "No Sleeping % CTA data", ha='center', va='center',
+                    color=self.TEXT_COLOR, fontsize=10, transform=ax.transAxes)
+
+        # Styling
+        ax.set_title('Sleep CTA Comparison', fontsize=9, color=self.TEXT_COLOR, fontweight='bold', pad=5)
+        ax.set_xlim(0, 36)
+        ax.set_xticks([0, 12, 24, 36])
+        ax.set_xticklabels(['ZT0', 'ZT12', 'ZT24', 'ZT36'], fontsize=7)
+        ax.set_ylabel('Sleeping %', fontsize=7, color=self.TEXT_COLOR)
+        ax.tick_params(colors=self.TEXT_COLOR, labelsize=6)
+
+        if has_data:
+            legend = ax.legend(loc='upper right', fontsize=5, facecolor=self.BG_COLOR,
+                              edgecolor=self.GRID_COLOR, labelcolor=self.TEXT_COLOR)
+            legend.set_draggable(True)
+
+        for spine in ax.spines.values():
+            spine.set_color(self.GRID_COLOR)
+
+    def _draw_sleep_bar_comparison(self, ax, datasets: List[Dict[str, Any]], metric_key: str,
+                                    title: str, show_legend: bool = False):
+        """
+        Draw bar chart comparison for a sleep metric across datasets.
+
+        Args:
+            ax: Matplotlib axes
+            datasets: List of dataset dicts with sleep data
+            metric_key: Base key for the metric (e.g., 'sleep_total_minutes')
+            title: Chart title
+            show_legend: Whether to show legend
+        """
+        n_datasets = len(datasets)
+
+        # Collect data for each dataset
+        light_means = []
+        light_sems = []
+        dark_means = []
+        dark_sems = []
+        light_raw_data = []
+        dark_raw_data = []
+
+        for ds in datasets:
+            light_arr = ds.get(f'{metric_key}_light', np.array([]))
+            dark_arr = ds.get(f'{metric_key}_dark', np.array([]))
+
+            # Store raw arrays for statistics
+            light_raw_data.append(light_arr if len(light_arr) > 0 else np.array([]))
+            dark_raw_data.append(dark_arr if len(dark_arr) > 0 else np.array([]))
+
+            if len(light_arr) > 0:
+                valid_light = light_arr[~np.isnan(light_arr)]
+                light_means.append(np.mean(valid_light) if len(valid_light) > 0 else 0)
+                light_sems.append(np.std(valid_light) / np.sqrt(len(valid_light)) if len(valid_light) > 1 else 0)
+            else:
+                light_means.append(0)
+                light_sems.append(0)
+
+            if len(dark_arr) > 0:
+                valid_dark = dark_arr[~np.isnan(dark_arr)]
+                dark_means.append(np.mean(valid_dark) if len(valid_dark) > 0 else 0)
+                dark_sems.append(np.std(valid_dark) / np.sqrt(len(valid_dark)) if len(valid_dark) > 1 else 0)
+            else:
+                dark_means.append(0)
+                dark_sems.append(0)
+
+        # Draw bars grouped by dataset
+        bar_width = 0.35
+        x_positions = np.arange(n_datasets)
+
+        error_color = '#000000' if self.light_mode else '#ffffff'
+        error_kw = {'elinewidth': 1.5, 'capthick': 1.5, 'ecolor': error_color}
+
+        bars_dark = ax.bar(x_positions - bar_width/2, dark_means, bar_width,
+                          yerr=dark_sems, capsize=3, color='#555555', label='Dark', alpha=0.8,
+                          error_kw=error_kw)
+        bars_light = ax.bar(x_positions + bar_width/2, light_means, bar_width,
+                           yerr=light_sems, capsize=3, color='#ffcc00', label='Light', alpha=0.8,
+                           error_kw=error_kw)
+
+        # Color-code bar edges by dataset
+        for i, (bd, bl) in enumerate(zip(bars_dark, bars_light)):
+            color = self.DATASET_COLORS[i % len(self.DATASET_COLORS)]
+            bd.set_edgecolor(color)
+            bd.set_linewidth(2)
+            bl.set_edgecolor(color)
+            bl.set_linewidth(2)
+
+        # X-axis labels
+        ax.set_xticks(x_positions)
+        xlabels = []
+        for ds in datasets:
+            label = self._get_dataset_label(ds)
+            if len(label) > 10:
+                label = label[:8] + '..'
+            xlabels.append(label)
+        ax.set_xticklabels(xlabels, fontsize=5, rotation=15, ha='right')
+
+        # Add statistics if enabled
+        if self.show_statistics and n_datasets >= 2:
+            dark_stats = self._compute_statistics(dark_raw_data)
+            light_stats = self._compute_statistics(light_raw_data)
+
+            # Store statistics results for sleep metrics
+            self._store_sleep_statistics_result(title, datasets, dark_stats, light_stats,
+                                                dark_means, dark_sems, light_means, light_sems)
+
+            # Get max bar height for positioning brackets
+            max_dark = max(dark_means[i] + dark_sems[i] for i in range(n_datasets)) if dark_means else 0
+            max_light = max(light_means[i] + light_sems[i] for i in range(n_datasets)) if light_means else 0
+            max_height = max(max_dark, max_light)
+
+            # Add brackets for significant comparisons
+            bracket_y = max_height * 1.05
+            bracket_level = 0
+            for (i, j), p_value in sorted(dark_stats['pairwise'].items()):
+                symbol = self._get_significance_symbol(p_value)
+                if symbol and symbol != 'ns':
+                    y_pos = bracket_y + bracket_level * max_height * 0.15
+                    self._add_significance_bracket(ax, x_positions[i] - bar_width/2,
+                                                    x_positions[j] - bar_width/2, y_pos, symbol)
+                    bracket_level += 1
+
+        # Styling
+        ax.set_title(title, fontsize=7, fontweight='bold', color=self.TEXT_COLOR, pad=2)
+        ax.tick_params(colors=self.TEXT_COLOR, labelsize=5)
+
+        for spine in ax.spines.values():
+            spine.set_color(self.GRID_COLOR)
+
+        if show_legend:
+            legend = ax.legend(loc='upper left', fontsize=5, framealpha=0.9,
+                              facecolor=self.BG_COLOR, edgecolor=self.GRID_COLOR,
+                              labelcolor=self.TEXT_COLOR)
+            legend.set_draggable(True)
+
+    def _draw_sleep_ld_ratio_comparison(self, ax, datasets: List[Dict[str, Any]]):
+        """
+        Draw Light/Dark ratio comparison bar chart.
+
+        L/D Ratio = Total Sleep Light / Total Sleep Dark
+        """
+        n_datasets = len(datasets)
+
+        ratios = []
+        ratio_sems = []
+        raw_ratios = []
+
+        for ds in datasets:
+            light_arr = ds.get('sleep_total_minutes_light', np.array([]))
+            dark_arr = ds.get('sleep_total_minutes_dark', np.array([]))
+
+            if len(light_arr) > 0 and len(dark_arr) > 0:
+                # Compute L/D ratio per animal, then average
+                per_animal_ratios = []
+                for l, d in zip(light_arr, dark_arr):
+                    if d > 0 and not np.isnan(l) and not np.isnan(d):
+                        per_animal_ratios.append(l / d)
+                    elif l > 0 and (d == 0 or np.isnan(d)):
+                        per_animal_ratios.append(np.nan)  # Infinite ratio
+
+                valid_ratios = [r for r in per_animal_ratios if not np.isnan(r) and r != float('inf')]
+                if valid_ratios:
+                    ratios.append(np.mean(valid_ratios))
+                    ratio_sems.append(np.std(valid_ratios) / np.sqrt(len(valid_ratios)) if len(valid_ratios) > 1 else 0)
+                    raw_ratios.append(np.array(valid_ratios))
+                else:
+                    ratios.append(0)
+                    ratio_sems.append(0)
+                    raw_ratios.append(np.array([]))
+            else:
+                ratios.append(0)
+                ratio_sems.append(0)
+                raw_ratios.append(np.array([]))
+
+        # Draw bars
+        x_positions = np.arange(n_datasets)
+        bar_width = 0.6
+
+        error_color = '#000000' if self.light_mode else '#ffffff'
+        error_kw = {'elinewidth': 1.5, 'capthick': 1.5, 'ecolor': error_color}
+
+        for i, (ratio, sem) in enumerate(zip(ratios, ratio_sems)):
+            color = self.DATASET_COLORS[i % len(self.DATASET_COLORS)]
+            ax.bar(x_positions[i], ratio, bar_width, yerr=sem, capsize=3,
+                   color=color, alpha=0.8, error_kw=error_kw)
+
+        # Add reference line at y=1 (equal light/dark)
+        ax.axhline(y=1, color=self.GRID_COLOR, linestyle='--', linewidth=1, alpha=0.7)
+
+        # X-axis labels
+        ax.set_xticks(x_positions)
+        xlabels = []
+        for ds in datasets:
+            label = self._get_dataset_label(ds)
+            if len(label) > 10:
+                label = label[:8] + '..'
+            xlabels.append(label)
+        ax.set_xticklabels(xlabels, fontsize=5, rotation=15, ha='right')
+
+        # Add statistics if enabled
+        if self.show_statistics and n_datasets >= 2:
+            ratio_stats = self._compute_statistics(raw_ratios)
+
+            # Store statistics
+            dataset_labels = [self._get_dataset_label(ds) for ds in datasets]
+            for (i, j), p_value in ratio_stats['pairwise'].items():
+                self.statistics_results.append({
+                    'metric': 'Sleep L/D Ratio',
+                    'phase': 'Combined',
+                    'comparison': f'{dataset_labels[i]} vs {dataset_labels[j]}',
+                    'group1': dataset_labels[i],
+                    'group2': dataset_labels[j],
+                    'group1_mean': ratios[i],
+                    'group1_sem': ratio_sems[i],
+                    'group2_mean': ratios[j],
+                    'group2_sem': ratio_sems[j],
+                    'test': 't-test' if n_datasets == 2 else 't-test (Bonferroni)',
+                    'p_value': p_value,
+                    'significance': self._get_significance_symbol(p_value),
+                    'anova_p': ratio_stats.get('anova_p')
+                })
+
+            # Add significance brackets
+            max_height = max(ratios[i] + ratio_sems[i] for i in range(n_datasets)) if ratios else 1
+            bracket_y = max_height * 1.05
+            bracket_level = 0
+            for (i, j), p_value in sorted(ratio_stats['pairwise'].items()):
+                symbol = self._get_significance_symbol(p_value)
+                if symbol and symbol != 'ns':
+                    y_pos = bracket_y + bracket_level * max_height * 0.15
+                    self._add_significance_bracket(ax, x_positions[i], x_positions[j], y_pos, symbol)
+                    bracket_level += 1
+
+        # Styling
+        ax.set_title('L/D Ratio', fontsize=7, fontweight='bold', color=self.TEXT_COLOR, pad=2)
+        ax.set_ylabel('Light / Dark', fontsize=6, color=self.TEXT_COLOR)
+        ax.tick_params(colors=self.TEXT_COLOR, labelsize=5)
+
+        for spine in ax.spines.values():
+            spine.set_color(self.GRID_COLOR)
+
+    def _store_sleep_statistics_result(self, metric_name: str, datasets: List[Dict],
+                                        dark_stats: dict, light_stats: dict,
+                                        dark_means: List[float], dark_sems: List[float],
+                                        light_means: List[float], light_sems: List[float]):
+        """Store sleep statistics results for export."""
+        n_datasets = len(datasets)
+        dataset_labels = [self._get_dataset_label(ds) for ds in datasets]
+
+        # Store dark phase results
+        for (i, j), p_value in dark_stats['pairwise'].items():
+            self.statistics_results.append({
+                'metric': f'Sleep {metric_name}',
+                'phase': 'Dark',
+                'comparison': f'{dataset_labels[i]} vs {dataset_labels[j]}',
+                'group1': dataset_labels[i],
+                'group2': dataset_labels[j],
+                'group1_mean': dark_means[i],
+                'group1_sem': dark_sems[i],
+                'group2_mean': dark_means[j],
+                'group2_sem': dark_sems[j],
+                'test': 't-test' if n_datasets == 2 else 't-test (Bonferroni)',
+                'p_value': p_value,
+                'significance': self._get_significance_symbol(p_value),
+                'anova_p': dark_stats.get('anova_p')
+            })
+
+        # Store light phase results
+        for (i, j), p_value in light_stats['pairwise'].items():
+            self.statistics_results.append({
+                'metric': f'Sleep {metric_name}',
+                'phase': 'Light',
+                'comparison': f'{dataset_labels[i]} vs {dataset_labels[j]}',
+                'group1': dataset_labels[i],
+                'group2': dataset_labels[j],
+                'group1_mean': light_means[i],
+                'group1_sem': light_sems[i],
+                'group2_mean': light_means[j],
+                'group2_sem': light_sems[j],
+                'test': 't-test' if n_datasets == 2 else 't-test (Bonferroni)',
+                'p_value': p_value,
+                'significance': self._get_significance_symbol(p_value),
+                'anova_p': light_stats.get('anova_p')
+            })
+
 
 def load_consolidated_npz(npz_path: str) -> Optional[Dict[str, Any]]:
     """
@@ -908,8 +1438,24 @@ def load_consolidated_npz(npz_path: str) -> Optional[Dict[str, Any]]:
 
         # Load all metric arrays
         for key in data.keys():
-            if key not in ['consolidation_metadata', 'animal_metadata', 'metric_names']:
+            if key not in ['consolidation_metadata', 'animal_metadata', 'metric_names',
+                           'sleep_parameters_json']:
                 result[key] = data[key]
+
+        # Load sleep data if present
+        if 'sleep_n_animals' in data:
+            result['has_sleep_data'] = True
+            result['sleep_n_animals'] = int(data['sleep_n_animals'])
+
+            # Load sleep parameters
+            if 'sleep_parameters_json' in data:
+                result['sleep_parameters'] = json.loads(str(data['sleep_parameters_json']))
+            else:
+                result['sleep_parameters'] = {'threshold': 0.5, 'bin_width': 5.0}
+
+            # Sleep arrays are already loaded in the generic loop above
+        else:
+            result['has_sleep_data'] = False
 
         return result
 
