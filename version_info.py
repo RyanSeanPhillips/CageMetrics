@@ -4,8 +4,8 @@ This file contains metadata that will be embedded in the .exe file
 """
 
 # Version information
-VERSION = (1, 0, 2, 0)
-VERSION_STRING = "1.0.2"
+VERSION = (1, 0, 3, 0)
+VERSION_STRING = "1.0.3"
 
 # Zenodo DOI for citation
 DOI = "10.5281/zenodo.17968545"
