@@ -38,16 +38,21 @@ class FigureGenerator:
     DARK_PHASE_COLOR = '#2d2d2d'   # Same as background (no visible shading)
     LIGHT_PHASE_COLOR = '#4a4a2a'  # Subtle yellow tint for light phase
 
+    FIGURE_DPI = 150  # DPI for crisp on-screen rendering
+
     def __init__(self):
         pass
 
-    def generate_all_pages(self, animal_id: str, animal_data: Dict[str, Any]) -> List[Tuple[str, Figure]]:
+    def generate_all_pages(self, animal_id: str, animal_data: Dict[str, Any],
+                           visualization_mode: str = 'actogram') -> List[Tuple[str, Figure]]:
         """
         Generate all figure pages for an animal.
 
         Args:
             animal_id: Animal identifier
             animal_data: Analysis results for this animal
+            visualization_mode: 'actogram' (48h double-plot), 'stacked' (36h L-D-L),
+                                or 'both' (actogram pages then stacked pages)
 
         Returns:
             List of (title, figure) tuples
@@ -58,16 +63,27 @@ class FigureGenerator:
         fig_summary = self.create_summary_page(animal_id, animal_data)
         pages.append(("Summary", fig_summary))
 
-        # Pages 2+: Stacked daily traces with CTA (3 metrics per page)
+        # Pages 2+: Daily traces with CTA (3 metrics per page)
         metrics = animal_data.get('metrics', {})
         metric_names = list(metrics.keys())
         metrics_per_page = 3
 
-        for page_idx in range(0, len(metric_names), metrics_per_page):
-            page_metrics = metric_names[page_idx:page_idx + metrics_per_page]
-            page_num = page_idx // metrics_per_page + 1
-            fig_traces = self.create_stacked_traces_page(animal_id, animal_data, page_metrics, page_num)
-            pages.append((f"Traces {page_num}", fig_traces))
+        show_actogram = visualization_mode in ('actogram', 'both')
+        show_stacked = visualization_mode in ('stacked', 'both')
+
+        if show_actogram:
+            for page_idx in range(0, len(metric_names), metrics_per_page):
+                page_metrics = metric_names[page_idx:page_idx + metrics_per_page]
+                page_num = page_idx // metrics_per_page + 1
+                fig_acto = self.create_actogram_page(animal_id, animal_data, page_metrics, page_num)
+                pages.append((f"Actogram {page_num}", fig_acto))
+
+        if show_stacked:
+            for page_idx in range(0, len(metric_names), metrics_per_page):
+                page_metrics = metric_names[page_idx:page_idx + metrics_per_page]
+                page_num = page_idx // metrics_per_page + 1
+                fig_traces = self.create_stacked_traces_page(animal_id, animal_data, page_metrics, page_num)
+                pages.append((f"Traces {page_num}", fig_traces))
 
         # Final page: Statistics
         fig_stats = self.create_statistics_page(animal_id, animal_data)
@@ -82,7 +98,7 @@ class FigureGenerator:
 
     def create_summary_page(self, animal_id: str, animal_data: Dict[str, Any]) -> Figure:
         """Create the animal summary/metadata page with data availability timeline."""
-        fig = Figure(figsize=(11, 8.5), facecolor=self.BG_COLOR)
+        fig = Figure(figsize=(11, 8.5), dpi=self.FIGURE_DPI, facecolor=self.BG_COLOR)
 
         # Title
         fig.suptitle(f"Animal Summary: {animal_id}", fontsize=16, fontweight='bold',
@@ -297,7 +313,7 @@ class FigureGenerator:
         n_metrics = len(page_metrics)
 
         # Figure with 3 columns (one per metric), 2 rows (traces + CTA with completeness on y2)
-        fig = Figure(figsize=(11, 8.5), facecolor=self.BG_COLOR)
+        fig = Figure(figsize=(11, 8.5), dpi=self.FIGURE_DPI, facecolor=self.BG_COLOR)
 
         fig.suptitle(f"Daily Traces & CTA: {animal_id} (Page {page_num})",
                     fontsize=14, fontweight='bold', color=self.TEXT_COLOR, y=0.98)
@@ -403,6 +419,237 @@ class FigureGenerator:
 
         for spine in ax.spines.values():
             spine.set_color(self.GRID_COLOR)
+
+    def create_actogram_page(self, animal_id: str, animal_data: Dict[str, Any],
+                             page_metrics: List[str], page_num: int) -> Figure:
+        """Create double-plotted actogram page with CTA (3 metrics per page).
+
+        Each row shows 48 hours: day N concatenated with day N+1.
+        Day N+1 then appears again as the left half of the next row.
+        """
+        metrics = animal_data.get('metrics', {})
+        n_days = animal_data.get('n_days', 1)
+        n_metrics = len(page_metrics)
+
+        fig = Figure(figsize=(11, 8.5), dpi=self.FIGURE_DPI, facecolor=self.BG_COLOR)
+
+        fig.suptitle(f"Double-Plotted Actogram: {animal_id} (Page {page_num})",
+                    fontsize=14, fontweight='bold', color=self.TEXT_COLOR, y=0.98)
+
+        # Same layout as stacked traces: 2 rows x 3 columns (actogram top, CTA bottom)
+        gs = GridSpec(2, 3, figure=fig, height_ratios=[3, 1.2],
+                     hspace=0.15, wspace=0.25, left=0.06, right=0.94, top=0.92, bottom=0.08)
+
+        for metric_idx, metric_name in enumerate(page_metrics):
+            if metric_name not in metrics:
+                continue
+
+            metric_data = metrics[metric_name]
+            daily_data = metric_data.get('daily_data', [])
+            cta = metric_data.get('cta', np.array([]))
+            cta_sem = metric_data.get('cta_sem', np.array([]))
+
+            # === Top row: Double-plotted actogram ===
+            ax_acto = fig.add_subplot(gs[0, metric_idx])
+            ax_acto.set_facecolor(self.BG_COLOR)
+
+            if daily_data and len(daily_data) >= 2:
+                self._draw_double_plotted_actogram(ax_acto, daily_data, n_days, metric_name,
+                                                   show_ylabel=(metric_idx == 0))
+            elif daily_data:
+                # Only 1 day -- fall back to single-day display
+                self._draw_stacked_traces(ax_acto, daily_data, n_days, metric_name,
+                                          show_ylabel=(metric_idx == 0))
+
+            # === Bottom row: CTA (48h for actogram context) ===
+            ax_cta = fig.add_subplot(gs[1, metric_idx])
+            ax_cta.set_facecolor(self.BG_COLOR)
+
+            if len(cta) > 0:
+                self._draw_cta_48h(ax_cta, cta, cta_sem, daily_data,
+                                   metric_name=metric_name, show_xlabel=True)
+
+        return fig
+
+    def _draw_double_plotted_actogram(self, ax, daily_data: List[np.ndarray], n_days: int,
+                                       metric_name: str, show_ylabel: bool = True):
+        """Draw double-plotted actogram: 48 hours per row, consecutive days overlapping.
+
+        Row 0: Day1 + Day2 (48h)
+        Row 1: Day2 + Day3 (48h)
+        ...
+        Row n-2: Day(n-1) + Day(n) (48h)
+
+        Each day appears twice: right side of one row, left side of the next.
+        """
+        # Find global min/max for consistent scaling
+        all_values = np.concatenate(daily_data)
+        valid_values = all_values[~np.isnan(all_values)]
+        if len(valid_values) == 0:
+            return
+
+        data_min = np.percentile(valid_values, 1)
+        data_max = np.percentile(valid_values, 99)
+        data_range = data_max - data_min if data_max > data_min else 1
+
+        # 48-hour x-axis (2880 minutes)
+        x_minutes_48h = np.arange(2880)
+        x_hours_48h = x_minutes_48h / 60
+
+        # Number of double-plot rows = n_days - 1
+        n_rows = len(daily_data) - 1
+        if n_rows < 1:
+            return
+
+        # Plot each double-plot row
+        for row_idx in range(n_rows):
+            day_a = daily_data[row_idx]
+            day_b = daily_data[row_idx + 1]
+
+            # Concatenate consecutive days: 48 hours total
+            row_48h = np.concatenate([day_a, day_b])
+
+            # Normalize to 0-1 range
+            normalized = (row_48h - data_min) / data_range
+            normalized = np.clip(normalized, 0, 1)
+
+            # Vertical offset (row 0 at top)
+            y_offset = row_idx
+            y_values = normalized * 0.85 + y_offset + 0.075
+
+            color = self.DAY_COLORS[row_idx % len(self.DAY_COLORS)]
+            ax.plot(x_hours_48h, y_values, color=color, linewidth=0.5, alpha=0.8)
+
+            # Day label on left: "D1-2", "D2-3", etc.
+            label = f'D{row_idx + 1}-{row_idx + 2}'
+            ax.text(-0.5, y_offset + 0.5, label, ha='right', va='center',
+                   fontsize=6, color=color, fontweight='bold')
+
+        # Light/dark shading for 48 hours: L-D-L-D
+        ax.axvspan(0, 12, facecolor=self.LIGHT_PHASE_COLOR, zorder=0)     # Light ZT0-12
+        ax.axvspan(12, 24, facecolor=self.DARK_PHASE_COLOR, zorder=0)     # Dark ZT12-24
+        ax.axvspan(24, 36, facecolor=self.LIGHT_PHASE_COLOR, zorder=0)    # Light ZT24-36
+        ax.axvspan(36, 48, facecolor=self.DARK_PHASE_COLOR, zorder=0)     # Dark ZT36-48
+
+        # Vertical line at 24h to delineate the two days
+        ax.axvline(x=24, color=self.GRID_COLOR, linewidth=0.8, linestyle='--', alpha=0.5, zorder=1)
+
+        # Formatting
+        ax.set_xlim(0, 48)
+        ax.set_ylim(0, n_rows)
+        ax.set_xticks([0, 12, 24, 36, 48])
+        ax.set_xticklabels([])  # CTA below will show labels
+        ax.set_yticks([])
+
+        ax.set_title(metric_name, fontsize=9, color=self.TEXT_COLOR, fontweight='bold', pad=5)
+
+        ax.tick_params(colors=self.TEXT_COLOR, labelsize=7)
+
+        for spine in ax.spines.values():
+            spine.set_color(self.GRID_COLOR)
+
+    def _draw_cta_48h(self, ax, cta: np.ndarray, cta_sem: np.ndarray,
+                      daily_data: List[np.ndarray], metric_name: str = '',
+                      show_xlabel: bool = True, show_y2_label: bool = True):
+        """Draw CTA with SEM shading over 48 hours, with data completeness on y2 axis.
+
+        Repeats the full 24h CTA twice to match the 48h actogram above.
+        The completeness curve is color-coded: green (100%), yellow (50%), red (0%).
+        """
+        from matplotlib.colors import LinearSegmentedColormap
+        from matplotlib.collections import LineCollection
+
+        # Create 48-hour CTA by repeating the full 24h cycle
+        cta_48h = np.concatenate([cta, cta])
+        sem_48h = np.concatenate([cta_sem, cta_sem])
+
+        x_hours = np.arange(len(cta_48h)) / 60  # 0-48 hours
+
+        # Apply smoothing (15-min rolling average)
+        window = 15
+        cta_smooth = pd.Series(cta_48h).rolling(window=window, min_periods=1, center=True).mean().values
+        sem_smooth = pd.Series(sem_48h).rolling(window=window, min_periods=1, center=True).mean().values
+
+        # Light/dark shading for 48 hours
+        ax.axvspan(0, 12, facecolor=self.LIGHT_PHASE_COLOR, zorder=0)
+        ax.axvspan(12, 24, facecolor=self.DARK_PHASE_COLOR, zorder=0)
+        ax.axvspan(24, 36, facecolor=self.LIGHT_PHASE_COLOR, zorder=0)
+        ax.axvspan(36, 48, facecolor=self.DARK_PHASE_COLOR, zorder=0)
+
+        # Vertical line at 24h
+        ax.axvline(x=24, color=self.GRID_COLOR, linewidth=0.8, linestyle='--', alpha=0.5, zorder=1)
+
+        # Plot CTA with SEM shading
+        ax.plot(x_hours, cta_smooth, color='#3daee9', linewidth=1.2, zorder=3)
+        ax.fill_between(x_hours, cta_smooth - sem_smooth, cta_smooth + sem_smooth,
+                       color='#3daee9', alpha=0.3, zorder=2)
+
+        # === Create y2 axis for completeness curve ===
+        ax2 = ax.twinx()
+
+        if daily_data:
+            # Concatenate all days and extend to 48 hours (repeat full dataset)
+            all_data = np.concatenate(daily_data)
+            all_data_48h = np.concatenate([all_data, all_data])
+
+            # Compute completeness in 15-minute bins
+            bin_size = 15  # minutes
+            n_bins = len(all_data_48h) // bin_size
+            completeness = np.zeros(n_bins)
+
+            for i in range(n_bins):
+                start_idx = i * bin_size
+                end_idx = start_idx + bin_size
+                chunk = all_data_48h[start_idx:end_idx]
+                completeness[i] = np.sum(~np.isnan(chunk)) / len(chunk) if len(chunk) > 0 else 0
+
+            # Create x values for completeness (center of each bin)
+            x_complete = (np.arange(n_bins) * bin_size + bin_size / 2) / 60  # hours
+
+            # Smooth the completeness curve
+            completeness_smooth = pd.Series(completeness).rolling(window=3, min_periods=1, center=True).mean().values
+
+            # Create color-coded line using LineCollection
+            # Colors: red (0%) -> yellow (50%) -> green (100%)
+            cmap = LinearSegmentedColormap.from_list('completeness',
+                                                     ['#e74c3c', '#f39c12', '#27ae60'])
+
+            points = np.array([x_complete, completeness_smooth * 100]).T.reshape(-1, 1, 2)
+            segments = np.concatenate([points[:-1], points[1:]], axis=1)
+
+            colors = (completeness_smooth[:-1] + completeness_smooth[1:]) / 2
+
+            lc = LineCollection(segments, cmap=cmap, linewidth=1, alpha=0.6, zorder=1)
+            lc.set_array(colors)
+            lc.set_clim(0, 1)
+            ax2.add_collection(lc)
+
+        ax2.set_ylim(0, 105)
+        ax2.set_ylabel('', fontsize=6, color='#888888')
+        if show_y2_label:
+            ax2.set_ylabel('Completeness (%)', fontsize=6, color='#888888', rotation=270, labelpad=12)
+
+        ax2.tick_params(axis='y', colors='#888888', labelsize=6)
+        ax2.spines['right'].set_color('#888888')
+        ax2.set_yticks([0, 50, 100])
+
+        # Formatting for main axis
+        ax.set_xlim(0, 48)
+        ax.set_xticks([0, 12, 24, 36, 48])
+        if show_xlabel:
+            ax.set_xticklabels(['ZT0', 'ZT12', 'ZT24', 'ZT36', 'ZT48'], fontsize=7)
+        else:
+            ax.set_xticklabels([])
+
+        ax.tick_params(colors=self.TEXT_COLOR, labelsize=7)
+
+        # Add y1 label showing the metric name
+        y_label = self._get_short_metric_label(metric_name)
+        if y_label:
+            ax.set_ylabel(y_label, fontsize=6, color=self.TEXT_COLOR)
+
+        for spine in ['top', 'bottom', 'left']:
+            ax.spines[spine].set_color(self.GRID_COLOR)
 
     def _draw_completeness_bar(self, ax, daily_data: List[np.ndarray], show_xlabel: bool = True):
         """Draw a compact bar showing data completeness over 36 hours.
@@ -611,7 +858,7 @@ class FigureGenerator:
         metrics = animal_data.get('metrics', {})
         n_metrics = len(metrics)
 
-        fig = Figure(figsize=(14, 8.5), facecolor=self.BG_COLOR)
+        fig = Figure(figsize=(14, 8.5), dpi=self.FIGURE_DPI, facecolor=self.BG_COLOR)
 
         fig.suptitle(f"Summary Statistics: {animal_id}", fontsize=14, fontweight='bold',
                     color=self.TEXT_COLOR, y=0.98)
@@ -757,7 +1004,7 @@ class FigureGenerator:
         - Middle third: Stacked per-day histograms (top) + Combined histogram (bottom)
         - Right third: Statistics table with expanded interpretation
         """
-        fig = Figure(figsize=(16, 12.5), facecolor=self.BG_COLOR)  # 25% taller
+        fig = Figure(figsize=(16, 12.5), dpi=self.FIGURE_DPI, facecolor=self.BG_COLOR)  # 25% taller
 
         fig.suptitle(f"Sleep Bout Analysis: {animal_id}", fontsize=14, fontweight='bold',
                     color=self.TEXT_COLOR, y=0.98)

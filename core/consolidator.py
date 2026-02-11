@@ -89,7 +89,8 @@ class Consolidator:
 
     def consolidate(self, npz_paths: List[str], output_path: str,
                     filter_criteria=None, save_npz: bool = True,
-                    save_pdf: bool = True) -> Dict[str, Any]:
+                    save_pdf: bool = True, layout_style: str = "classic",
+                    smoothing_window: int = 15) -> Dict[str, Any]:
         """
         Consolidate multiple NPZ files into NPZ, Excel, and PDF formats.
 
@@ -99,6 +100,7 @@ class Consolidator:
             filter_criteria: Optional FilterCriteria used for selection
             save_npz: Also save consolidated NPZ file (default: True)
             save_pdf: Also save PDF figures (default: True)
+            layout_style: Figure layout style ("classic" or "matrix")
 
         Returns:
             Dictionary with consolidation results including output paths
@@ -142,9 +144,28 @@ class Consolidator:
             # Tab 2: Light/Dark Means (all animals, all metrics)
             self._write_light_dark_tab(writer, animals, all_metrics)
 
-            # Tabs 3+: Per-metric CTA data
+            # Tab 3: Group Summary (mean ± SEM by genotype for Prism)
+            self._write_group_summary_tab(writer, animals, all_metrics)
+
+            # Tab 4: Sleep Statistics (if sleep data available)
+            self._write_sleep_stats_tab(writer, animals)
+
+            # Tab 5: Sleep Histogram Bins (if sleep data available)
+            self._write_histogram_tab(writer, animals)
+
+            # Tabs 6+: Per-metric CTA data
             for metric_name in all_metrics:
                 self._write_metric_cta_tab(writer, animals, metric_name)
+
+            # Tabs: Per-metric Daily Data (long format with light/dark/age)
+            for metric_name in all_metrics:
+                self._write_daily_data_tab(writer, animals, metric_name)
+
+            # Tabs: Per-metric Age-pivoted data (rows=age, cols=animals, for Prism)
+            has_age = any(a.get('metadata', {}).get('age_days_at_start') is not None for a in animals)
+            if has_age:
+                for metric_name in all_metrics:
+                    self._write_age_pivot_tab(writer, animals, metric_name)
 
         results['output_paths'].append(str(excel_path))
         results['excel_path'] = str(excel_path)
@@ -161,14 +182,15 @@ class Consolidator:
             if filter_criteria:
                 if hasattr(filter_criteria, 'to_description'):
                     filter_desc = filter_criteria.to_description()
-            self._write_consolidated_pdf(pdf_path, animals, filter_desc)
+            self._write_consolidated_pdf(pdf_path, animals, filter_desc, layout_style, smoothing_window)
             results['output_paths'].append(str(pdf_path))
             results['pdf_path'] = str(pdf_path)
 
         return results
 
     def _write_consolidated_pdf(self, pdf_path: Path, animals: List[Dict],
-                                 filter_description: str):
+                                 filter_description: str, layout_style: str = "classic",
+                                 smoothing_window: int = 15):
         """
         Write consolidated figures to PDF.
 
@@ -176,12 +198,14 @@ class Consolidator:
             pdf_path: Output PDF path
             animals: List of animal data dicts
             filter_description: Human-readable filter description
+            layout_style: Figure layout style ("classic" or "matrix")
+            smoothing_window: Rolling average window size in minutes
         """
         from matplotlib.backends.backend_pdf import PdfPages
         from core.consolidation_figure_generator import ConsolidationFigureGenerator
 
-        generator = ConsolidationFigureGenerator()
-        pages = generator.generate_all_pages(animals, filter_description)
+        generator = ConsolidationFigureGenerator(smoothing_window=smoothing_window)
+        pages = generator.generate_all_pages(animals, filter_description, layout_style=layout_style)
 
         with PdfPages(str(pdf_path)) as pdf:
             for title, fig in pages:
@@ -270,6 +294,20 @@ class Consolidator:
             data[f'{key_base}_all_ctas'] = cta_matrix
             data[f'{key_base}_dark_means'] = np.array(dark_means)
             data[f'{key_base}_light_means'] = np.array(light_means)
+
+            # Store per-animal daily data for actograms and age trending
+            # Each animal may have different number of days, so store separately
+            n_days_list = []
+            for animal_idx, animal in enumerate(animals):
+                m_data = animal.get('metrics', {}).get(metric_name, {})
+                daily_data = m_data.get('daily_data', None)
+                if daily_data is not None and len(daily_data) > 0:
+                    daily_arr = np.array(daily_data)
+                    data[f'{key_base}_daily_{animal_idx}'] = daily_arr
+                    n_days_list.append(len(daily_data))
+                else:
+                    n_days_list.append(0)
+            data[f'{key_base}_n_days_per_animal'] = np.array(n_days_list)
 
         # Aggregate and save sleep data if available
         self._write_sleep_data_to_npz(data, animals)
@@ -427,7 +465,7 @@ class Consolidator:
                 # Try to load daily data if present
                 daily_key = f'{key_base}_daily'
                 if daily_key in data:
-                    metrics[metric_name]['daily'] = data[daily_key]
+                    metrics[metric_name]['daily_data'] = data[daily_key]
 
             result = {
                 'metadata': metadata,
@@ -474,24 +512,38 @@ class Consolidator:
                 'quality_metrics': stats.get('quality_metrics', {}),
             }
 
-            # Extract bout durations for histogram aggregation
+            # Extract bout data for histogram aggregation
             if 'sleep_bouts' in data:
-                bouts = data['sleep_bouts']
+                from core.sleep_analysis import SleepBout
+                bout_array = data['sleep_bouts']
                 # bouts is structured array: (day, bout_num, start_minute, end_minute, duration, phase)
                 # phase: 0 = light, 1 = dark
                 light_durations = []
                 dark_durations = []
-                for bout in bouts:
+                bouts_list = []
+                for bout in bout_array:
                     duration = float(bout['duration'])
+                    phase_str = 'light' if bout['phase'] == 0 else 'dark'
                     if bout['phase'] == 0:
                         light_durations.append(duration)
                     else:
                         dark_durations.append(duration)
+                    # Reconstruct SleepBout object for histogram methods
+                    bouts_list.append(SleepBout(
+                        day=int(bout['day']),
+                        bout_num=int(bout['bout_num']),
+                        start_minute=int(bout['start_minute']),
+                        end_minute=int(bout['end_minute']),
+                        duration=duration,
+                        phase=phase_str
+                    ))
                 sleep_data['bout_durations_light'] = np.array(light_durations)
                 sleep_data['bout_durations_dark'] = np.array(dark_durations)
+                sleep_data['bouts'] = bouts_list
             else:
                 sleep_data['bout_durations_light'] = np.array([])
                 sleep_data['bout_durations_dark'] = np.array([])
+                sleep_data['bouts'] = []
 
             return sleep_data
 
@@ -504,7 +556,7 @@ class Consolidator:
         rows = []
         for animal in animals:
             meta = animal.get('metadata', {})
-            rows.append({
+            row = {
                 'Animal ID': meta.get('animal_id', ''),
                 'Genotype': meta.get('genotype', ''),
                 'Genotype (Raw)': meta.get('genotype_raw', ''),
@@ -512,10 +564,20 @@ class Consolidator:
                 'Cohort': meta.get('cohort', ''),
                 'Cage ID': meta.get('cage_id', ''),
                 'Cagemate': meta.get('companion', ''),
+                'DOB': meta.get('dob', ''),
+                'Age at Start (days)': meta.get('age_days_at_start', ''),
                 'Days Analyzed': meta.get('n_days_analyzed', 0),
                 'Total Minutes': meta.get('total_minutes', 0),
                 'Source File': animal.get('source_file', '')
-            })
+            }
+            # Compute age at end if age at start is available
+            age_start = meta.get('age_days_at_start', None)
+            n_days = meta.get('n_days_analyzed', 0)
+            if age_start is not None and n_days:
+                row['Age at End (days)'] = age_start + n_days - 1
+            else:
+                row['Age at End (days)'] = ''
+            rows.append(row)
 
         df = pd.DataFrame(rows)
         df.to_excel(writer, sheet_name='Animal Summary', index=False)
@@ -596,3 +658,331 @@ class Consolidator:
                 df[f'SEM_{genotype}'] = df[geno_cols].sem(axis=1)
 
         df.to_excel(writer, sheet_name=sheet_name, index=False)
+
+    def _write_sleep_stats_tab(self, writer: pd.ExcelWriter, animals: List[Dict]):
+        """Write sleep statistics for all animals to Excel tab."""
+        # Check if any animals have sleep data
+        animals_with_sleep = [a for a in animals if a.get('sleep_analysis')]
+        if not animals_with_sleep:
+            return
+
+        rows = []
+        for animal in animals_with_sleep:
+            meta = animal.get('metadata', {})
+            sleep = animal.get('sleep_analysis', {})
+            light_stats = sleep.get('light_stats', {})
+            dark_stats = sleep.get('dark_stats', {})
+            total_stats = sleep.get('total_stats', {})
+            quality = sleep.get('quality_metrics', {})
+
+            row = {
+                'Animal ID': meta.get('animal_id', ''),
+                'Genotype': meta.get('genotype', ''),
+                'Sex': meta.get('sex', ''),
+                'Cohort': meta.get('cohort', ''),
+                'N Days': sleep.get('n_days', 0),
+                # Light phase
+                'Light Total Sleep (min)': light_stats.get('total_minutes', np.nan),
+                'Light Sleep %': light_stats.get('percent_time', np.nan),
+                'Light Bout Count': light_stats.get('bout_count', np.nan),
+                'Light Mean Bout (min)': light_stats.get('mean_duration', np.nan),
+                'Light Median Bout (min)': light_stats.get('median_duration', np.nan),
+                'Light Max Bout (min)': light_stats.get('max_duration', np.nan),
+                # Dark phase
+                'Dark Total Sleep (min)': dark_stats.get('total_minutes', np.nan),
+                'Dark Sleep %': dark_stats.get('percent_time', np.nan),
+                'Dark Bout Count': dark_stats.get('bout_count', np.nan),
+                'Dark Mean Bout (min)': dark_stats.get('mean_duration', np.nan),
+                'Dark Median Bout (min)': dark_stats.get('median_duration', np.nan),
+                'Dark Max Bout (min)': dark_stats.get('max_duration', np.nan),
+                # Total
+                'Total Sleep (min)': total_stats.get('total_minutes', np.nan),
+                'Total Bout Count': total_stats.get('bout_count', np.nan),
+                'Total Mean Bout (min)': total_stats.get('mean_duration', np.nan),
+                # Quality metrics
+                '% Long Bouts (Light)': quality.get('long_bout_pct_light', np.nan),
+                '% Long Bouts (Dark)': quality.get('long_bout_pct_dark', np.nan),
+                'L/D Ratio': quality.get('light_dark_ratio', np.nan),
+                'Transition Rate': quality.get('transition_rate', np.nan),
+            }
+            rows.append(row)
+
+        if rows:
+            df = pd.DataFrame(rows)
+            df.to_excel(writer, sheet_name='Sleep Statistics', index=False)
+
+    def _write_group_summary_tab(self, writer: pd.ExcelWriter, animals: List[Dict], metrics: List[str]):
+        """Write group summary with mean ± SEM by genotype (Prism-ready format)."""
+        # Group animals by genotype
+        by_genotype = {}
+        for animal in animals:
+            geno = animal.get('metadata', {}).get('genotype', 'Unknown')
+            if geno not in by_genotype:
+                by_genotype[geno] = []
+            by_genotype[geno].append(animal)
+
+        rows = []
+        for genotype in sorted(by_genotype.keys()):
+            geno_animals = by_genotype[genotype]
+            n = len(geno_animals)
+
+            for metric_name in metrics:
+                # Collect light/dark/overall means for this genotype
+                light_vals = []
+                dark_vals = []
+                overall_vals = []
+
+                for animal in geno_animals:
+                    m_data = animal.get('metrics', {}).get(metric_name, {})
+                    if not np.isnan(m_data.get('light_mean', np.nan)):
+                        light_vals.append(m_data.get('light_mean'))
+                    if not np.isnan(m_data.get('dark_mean', np.nan)):
+                        dark_vals.append(m_data.get('dark_mean'))
+                    if not np.isnan(m_data.get('overall_mean', np.nan)):
+                        overall_vals.append(m_data.get('overall_mean'))
+
+                # Calculate mean ± SEM
+                def calc_stats(vals):
+                    if not vals:
+                        return np.nan, np.nan
+                    mean = np.mean(vals)
+                    sem = np.std(vals) / np.sqrt(len(vals)) if len(vals) > 1 else 0
+                    return mean, sem
+
+                l_mean, l_sem = calc_stats(light_vals)
+                d_mean, d_sem = calc_stats(dark_vals)
+                o_mean, o_sem = calc_stats(overall_vals)
+
+                rows.append({
+                    'Genotype': genotype,
+                    'N': n,
+                    'Metric': metric_name,
+                    'Light Mean': l_mean,
+                    'Light SEM': l_sem,
+                    'Dark Mean': d_mean,
+                    'Dark SEM': d_sem,
+                    'Overall Mean': o_mean,
+                    'Overall SEM': o_sem,
+                })
+
+        if rows:
+            df = pd.DataFrame(rows)
+            df.to_excel(writer, sheet_name='Group Summary', index=False)
+
+    def _write_histogram_tab(self, writer: pd.ExcelWriter, animals: List[Dict]):
+        """Write sleep bout histogram bins (pre-binned for Prism)."""
+        # Collect all bout durations
+        light_durations = []
+        dark_durations = []
+
+        for animal in animals:
+            sleep = animal.get('sleep_analysis', {})
+            bouts = sleep.get('bouts', [])
+            for bout in bouts:
+                if hasattr(bout, 'duration') and hasattr(bout, 'phase'):
+                    if bout.phase == 'light':
+                        light_durations.append(bout.duration)
+                    else:
+                        dark_durations.append(bout.duration)
+
+        if not light_durations and not dark_durations:
+            return
+
+        # Create histogram bins (5-minute bins, 0-120 minutes)
+        bin_width = 5.0
+        max_dur = 120.0
+        bins = np.arange(0, max_dur + bin_width, bin_width)
+        bin_centers = (bins[:-1] + bins[1:]) / 2
+
+        # Compute histograms
+        light_counts, _ = np.histogram(light_durations, bins=bins) if light_durations else (np.zeros(len(bins)-1), bins)
+        dark_counts, _ = np.histogram(dark_durations, bins=bins) if dark_durations else (np.zeros(len(bins)-1), bins)
+
+        # Time-weighted histograms (sum of durations in each bin)
+        light_time = np.zeros(len(bins) - 1)
+        dark_time = np.zeros(len(bins) - 1)
+        for dur in light_durations:
+            idx = min(int(dur // bin_width), len(light_time) - 1)
+            light_time[idx] += dur
+        for dur in dark_durations:
+            idx = min(int(dur // bin_width), len(dark_time) - 1)
+            dark_time[idx] += dur
+
+        # Get number of animals for normalization
+        n_animals = len([a for a in animals if a.get('sleep_analysis')])
+
+        df = pd.DataFrame({
+            'Bin Start (min)': bins[:-1],
+            'Bin End (min)': bins[1:],
+            'Bin Center (min)': bin_centers,
+            'Light Bout Count': light_counts,
+            'Dark Bout Count': dark_counts,
+            'Light Time in Bouts (min)': light_time,
+            'Dark Time in Bouts (min)': dark_time,
+            'Light Count per Animal': light_counts / n_animals if n_animals > 0 else light_counts,
+            'Dark Count per Animal': dark_counts / n_animals if n_animals > 0 else dark_counts,
+            'Light Time per Animal': light_time / n_animals if n_animals > 0 else light_time,
+            'Dark Time per Animal': dark_time / n_animals if n_animals > 0 else dark_time,
+        })
+        df.to_excel(writer, sheet_name='Histogram Bins', index=False)
+
+    def _write_daily_data_tab(self, writer: pd.ExcelWriter, animals: List[Dict], metric_name: str):
+        """Write per-day data for a metric with overall, light, and dark means plus age."""
+        # Clean sheet name
+        sheet_name = metric_name[:20].replace('/', '_').replace('\\', '_').replace('*', '').replace('?', '').replace('[', '').replace(']', '')
+        sheet_name = f"Daily_{sheet_name}"[:31]
+
+        # Collect daily data from all animals
+        all_daily_data = []
+        max_days = 0
+
+        for animal in animals:
+            meta = animal.get('metadata', {})
+            animal_id = meta.get('animal_id', 'Unknown')
+            genotype = meta.get('genotype', '')
+            age_at_start = meta.get('age_days_at_start', None)
+
+            m_data = animal.get('metrics', {}).get(metric_name, {})
+            daily_data = m_data.get('daily_data', None)
+
+            if daily_data is not None and len(daily_data) > 0:
+                n_days = len(daily_data)
+                max_days = max(max_days, n_days)
+                all_daily_data.append({
+                    'animal_id': animal_id,
+                    'genotype': genotype,
+                    'daily_data': daily_data,
+                    'n_days': n_days,
+                    'age_at_start': age_at_start
+                })
+
+        if not all_daily_data:
+            return
+
+        # Build long-format data frame: one row per animal per day
+        # Columns: Animal ID, Genotype, Day, Age, Overall Mean, Light Mean, Dark Mean
+        rows = []
+        for animal_data in all_daily_data:
+            for day_idx in range(animal_data['n_days']):
+                day_trace = animal_data['daily_data'][day_idx]
+                if len(day_trace) == 0:
+                    continue
+
+                day_arr = np.array(day_trace, dtype=float)
+
+                # Light phase = first 720 min (ZT0-ZT12), Dark phase = last 720 min (ZT12-ZT24)
+                light_mean = np.nanmean(day_arr[:720]) if len(day_arr) >= 720 else np.nan
+                dark_mean = np.nanmean(day_arr[720:]) if len(day_arr) > 720 else np.nan
+                overall_mean = np.nanmean(day_arr)
+
+                row = {
+                    'Animal ID': animal_data['animal_id'],
+                    'Genotype': animal_data['genotype'],
+                    'Day': day_idx + 1,
+                    'Overall Mean': overall_mean,
+                    'Light Mean': light_mean,
+                    'Dark Mean': dark_mean,
+                }
+
+                # Add age column if available
+                if animal_data['age_at_start'] is not None:
+                    row['Age (postnatal day)'] = animal_data['age_at_start'] + day_idx
+                else:
+                    row['Age (postnatal day)'] = ''
+
+                rows.append(row)
+
+        if rows:
+            df = pd.DataFrame(rows)
+            df.to_excel(writer, sheet_name=sheet_name, index=False)
+
+    def _write_age_pivot_tab(self, writer: pd.ExcelWriter, animals: List[Dict], metric_name: str):
+        """Write age-pivoted data: rows=postnatal age, cols=animals (light/dark/overall).
+
+        This format is ideal for copy-paste into Prism for age-based trending plots.
+        """
+        sheet_base = metric_name[:16].replace('/', '_').replace('\\', '_').replace('*', '').replace('?', '').replace('[', '').replace(']', '')
+        sheet_name = f"Age_{sheet_base}"[:31]
+
+        # Collect per-animal data keyed by age
+        animal_age_data = []  # list of {animal_id, genotype, age_map: {age: (light, dark, overall)}}
+
+        for animal in animals:
+            meta = animal.get('metadata', {})
+            age_at_start = meta.get('age_days_at_start', None)
+            if age_at_start is None:
+                continue
+
+            animal_id = meta.get('animal_id', 'Unknown')
+            genotype = meta.get('genotype', '')
+
+            m_data = animal.get('metrics', {}).get(metric_name, {})
+            daily_data = m_data.get('daily_data', None)
+
+            if daily_data is None or len(daily_data) == 0:
+                continue
+
+            age_map = {}
+            for day_idx, day_trace in enumerate(daily_data):
+                if len(day_trace) == 0:
+                    continue
+                day_arr = np.array(day_trace, dtype=float)
+                age = age_at_start + day_idx
+                light_mean = np.nanmean(day_arr[:720]) if len(day_arr) >= 720 else np.nan
+                dark_mean = np.nanmean(day_arr[720:]) if len(day_arr) > 720 else np.nan
+                overall_mean = np.nanmean(day_arr)
+                age_map[age] = (light_mean, dark_mean, overall_mean)
+
+            if age_map:
+                animal_age_data.append({
+                    'animal_id': animal_id,
+                    'genotype': genotype,
+                    'age_map': age_map
+                })
+
+        if not animal_age_data:
+            return
+
+        # Determine full age range
+        all_ages = set()
+        for ad in animal_age_data:
+            all_ages.update(ad['age_map'].keys())
+        min_age = min(all_ages)
+        max_age = max(all_ages)
+        age_range = list(range(min_age, max_age + 1))
+
+        # Build three sub-tables: Overall, Light, Dark
+        # Each has rows=ages, cols=animals
+        for phase, phase_idx in [('Overall', 2), ('Light', 0), ('Dark', 1)]:
+            rows = []
+            for age in age_range:
+                row = {'Age (P)': f'P{age}'}
+                for ad in animal_age_data:
+                    col_name = f"{ad['animal_id']}_{ad['genotype']}"
+                    vals = ad['age_map'].get(age)
+                    row[col_name] = vals[phase_idx] if vals else np.nan
+                rows.append(row)
+
+            df = pd.DataFrame(rows)
+
+            # Add group mean/SEM by genotype
+            genotypes = set(ad['genotype'] for ad in animal_age_data)
+            for genotype in sorted(genotypes):
+                geno_cols = [f"{ad['animal_id']}_{ad['genotype']}" for ad in animal_age_data if ad['genotype'] == genotype]
+                if geno_cols:
+                    df[f'Mean_{genotype}'] = df[geno_cols].mean(axis=1)
+                    df[f'SEM_{genotype}'] = df[geno_cols].sem(axis=1)
+                    df[f'N_{genotype}'] = df[geno_cols].count(axis=1)
+
+            # Write with phase label as sub-sheet or combined
+            if phase == 'Overall':
+                # First phase gets the sheet, write header row
+                df.to_excel(writer, sheet_name=sheet_name, index=False, startrow=1)
+                ws = writer.sheets[sheet_name]
+                ws.cell(row=1, column=1, value=f'{metric_name} - {phase} Mean by Age')
+            else:
+                # Append below with a gap
+                startrow = writer.sheets[sheet_name].max_row + 2
+                df.to_excel(writer, sheet_name=sheet_name, index=False, startrow=startrow + 1)
+                ws = writer.sheets[sheet_name]
+                ws.cell(row=startrow + 1, column=1, value=f'{metric_name} - {phase} Mean by Age')

@@ -70,6 +70,11 @@ FILTER_FIELDS = {
         'primary': False,
         'metadata_key': 'experiment_date',
     },
+    'group_name': {
+        'label': 'Group Name',
+        'primary': False,
+        'metadata_key': 'group_name',
+    },
     # Cagemate fields (for filtering by cagemate's properties)
     'cagemate_sex': {
         'label': 'Cagemate Sex',

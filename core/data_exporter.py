@@ -49,7 +49,8 @@ class DataExporter:
     def export_all_animals(self, analyzed_data: Dict[str, Dict[str, Any]],
                           output_dir: str, source_file: str = None,
                           figure_generator=None, parallel: bool = True,
-                          progress_callback=None) -> List[str]:
+                          progress_callback=None,
+                          visualization_mode: str = 'actogram') -> List[str]:
         """
         Export data for all analyzed animals.
 
@@ -60,6 +61,7 @@ class DataExporter:
             figure_generator: FigureGenerator instance for PDF export
             parallel: Use parallel processing for faster export
             progress_callback: Optional callback(message, percent) for progress updates
+            visualization_mode: 'actogram', 'stacked', or 'both' for PDF figure style
 
         Returns:
             List of saved file paths
@@ -75,7 +77,7 @@ class DataExporter:
 
         # Prepare export tasks
         export_tasks = [
-            (animal_id, animal_data, analysis_dir, figure_generator)
+            (animal_id, animal_data, analysis_dir, figure_generator, visualization_mode)
             for animal_id, animal_data in analyzed_data.items()
         ]
 
@@ -115,8 +117,9 @@ class DataExporter:
         else:
             # Sequential export
             saved_files = []
-            for i, (animal_id, animal_data, analysis_dir, fig_gen) in enumerate(export_tasks):
-                files = self.export_animal(animal_id, animal_data, analysis_dir, fig_gen)
+            for i, (animal_id, animal_data, analysis_dir, fig_gen, viz_mode) in enumerate(export_tasks):
+                files = self.export_animal(animal_id, animal_data, analysis_dir, fig_gen,
+                                            visualization_mode=viz_mode)
                 saved_files.extend(files)
 
                 if progress_callback:
@@ -127,11 +130,13 @@ class DataExporter:
 
     def _export_animal_task(self, task: Tuple) -> List[str]:
         """Worker function for parallel export."""
-        animal_id, animal_data, output_dir, figure_generator = task
-        return self.export_animal(animal_id, animal_data, output_dir, figure_generator)
+        animal_id, animal_data, output_dir, figure_generator, visualization_mode = task
+        return self.export_animal(animal_id, animal_data, output_dir, figure_generator,
+                                  visualization_mode=visualization_mode)
 
     def export_animal(self, animal_id: str, animal_data: Dict[str, Any],
-                     output_dir: Path, figure_generator=None) -> List[str]:
+                     output_dir: Path, figure_generator=None,
+                     visualization_mode: str = 'actogram') -> List[str]:
         """
         Export data for a single animal.
 
@@ -140,6 +145,7 @@ class DataExporter:
             animal_data: Analysis results for this animal
             output_dir: Directory to save files
             figure_generator: FigureGenerator instance for PDF export
+            visualization_mode: 'actogram', 'stacked', or 'both' for PDF figure style
 
         Returns:
             List of saved file paths
@@ -151,7 +157,8 @@ class DataExporter:
 
         # Export PDF figures
         if figure_generator:
-            pdf_file = self._export_pdf(animal_id, animal_data, output_dir, base_name, figure_generator)
+            pdf_file = self._export_pdf(animal_id, animal_data, output_dir, base_name,
+                                        figure_generator, visualization_mode=visualization_mode)
             if pdf_file:
                 saved_files.append(str(pdf_file))
 
@@ -224,13 +231,15 @@ class DataExporter:
     FILE_PATTERN = "CageMetrics_*_Data.npz"
 
     def _export_pdf(self, animal_id: str, animal_data: Dict[str, Any],
-                   output_dir: Path, base_name: str, figure_generator) -> Optional[Path]:
+                   output_dir: Path, base_name: str, figure_generator,
+                   visualization_mode: str = 'actogram') -> Optional[Path]:
         """Export all figures to a multi-page PDF."""
         try:
             output_file = output_dir / f"{base_name}_Figures.pdf"
 
             # Generate all figure pages
-            pages = figure_generator.generate_all_pages(animal_id, animal_data)
+            pages = figure_generator.generate_all_pages(animal_id, animal_data,
+                                                         visualization_mode=visualization_mode)
 
             with PdfPages(output_file) as pdf:
                 for title, fig in pages:

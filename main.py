@@ -29,6 +29,8 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.figure import Figure
 import matplotlib.pyplot as plt
+from io import BytesIO
+# QSvgWidget import removed - using raster QLabel rendering for performance
 
 # Local imports
 from core.data_loader import DataLoader
@@ -202,14 +204,71 @@ NavigationToolbar2QT {
 """
 
 
+class SvgFigureWidget(QLabel):
+    """Renders a matplotlib Figure as a raster PNG image for fast on-screen display.
+
+    Uses QLabel with QPixmap for much better performance than SVG rendering,
+    especially with complex figures. The original Figure is kept for high-quality
+    PDF/vector export via save_figure().
+    """
+
+    def __init__(self, fig, parent=None):
+        super().__init__(parent)
+        self._fig = fig
+        # Store natural aspect ratio from figure dimensions
+        self._natural_w = fig.get_figwidth()
+        self._natural_h = fig.get_figheight()
+        self._aspect = self._natural_h / self._natural_w if self._natural_w > 0 else 0.77
+
+        # Render figure to PNG bytes at screen resolution
+        self._render_dpi = 150
+        buf = BytesIO()
+        fig.savefig(buf, format='png', bbox_inches='tight',
+                    facecolor=fig.get_facecolor(), dpi=self._render_dpi)
+        png_bytes = buf.getvalue()
+        buf.close()
+
+        # Load into QPixmap
+        self._pixmap = QPixmap()
+        self._pixmap.loadFromData(png_bytes)
+
+        self.setPixmap(self._pixmap)
+        self.setScaledContents(True)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        # Size policy: fill width, compute height from aspect ratio
+        sp = QSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setSizePolicy(sp)
+        # Set initial height based on natural figure size
+        w = int(self._natural_w * 96)
+        h = int(self._natural_h * 96)
+        self.setMinimumHeight(int(h * 0.5))
+        self.setFixedHeight(h)
+
+    def resizeEvent(self, event):
+        """Maintain aspect ratio when width changes."""
+        new_w = event.size().width()
+        new_h = int(new_w * self._aspect)
+        if new_h != self.height():
+            self.setFixedHeight(new_h)
+        super().resizeEvent(event)
+
+    def save_figure(self, path, fmt='pdf'):
+        """Save the original figure to a file (high quality for export)."""
+        self._fig.savefig(path, format=fmt, bbox_inches='tight',
+                          facecolor=self._fig.get_facecolor(), dpi=300)
+
+
 class ScrollableFigureWidget(QWidget):
     """Widget displaying all figures for an animal in a scrollable view with toolbar."""
 
-    def __init__(self, animal_id: str, animal_data: dict, parent=None):
+    def __init__(self, animal_id: str, animal_data: dict, parent=None,
+                 visualization_mode: str = 'actogram'):
         super().__init__(parent)
         self.animal_id = animal_id
         self.animal_data = animal_data
         self.figure_generator = FigureGenerator()
+        self.visualization_mode = visualization_mode
         self.canvases = []
 
         self.setup_ui()
@@ -237,7 +296,8 @@ class ScrollableFigureWidget(QWidget):
 
     def generate_and_display_figures(self, progress_callback=None):
         """Generate all figures and add them to the scrollable view."""
-        pages = self.figure_generator.generate_all_pages(self.animal_id, self.animal_data)
+        pages = self.figure_generator.generate_all_pages(self.animal_id, self.animal_data,
+                                                            visualization_mode=self.visualization_mode)
 
         for i, (title, fig) in enumerate(pages):
             if progress_callback:
@@ -256,17 +316,10 @@ class ScrollableFigureWidget(QWidget):
             title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             fig_layout.addWidget(title_label)
 
-            # Canvas
-            canvas = FigureCanvas(fig)
-            canvas.setMinimumHeight(600)
-            self.canvases.append(canvas)
-
-            # Toolbar
-            toolbar = NavigationToolbar(canvas, self)
-            toolbar.setStyleSheet("background-color: #2d2d2d;")
-
-            fig_layout.addWidget(toolbar)
-            fig_layout.addWidget(canvas)
+            # SVG rendering for pixel-perfect vector display
+            svg_widget = SvgFigureWidget(fig)
+            self.canvases.append(svg_widget)
+            fig_layout.addWidget(svg_widget)
 
             self.figures_layout.addWidget(fig_frame)
 
@@ -350,31 +403,54 @@ class AnalysisTab(QWidget):
 
         layout.addWidget(self.progress_frame)
 
-        # === Sleep Analysis Options ===
-        self.sleep_options_frame = QFrame()
-        self.sleep_options_frame.setStyleSheet("QFrame { background-color: #353535; border-radius: 4px; }")
-        sleep_layout = QHBoxLayout(self.sleep_options_frame)
-        sleep_layout.setContentsMargins(10, 5, 10, 5)
-        sleep_layout.setSpacing(15)
+        # === Analysis Options (visualization + sleep on one row) ===
+        self.options_frame = QFrame()
+        self.options_frame.setStyleSheet("QFrame { background-color: #353535; border-radius: 4px; }")
+        options_layout = QHBoxLayout(self.options_frame)
+        options_layout.setContentsMargins(10, 5, 10, 5)
+        options_layout.setSpacing(10)
 
-        # Enable checkbox
+        # Traces view combo
+        options_layout.addWidget(QLabel("Traces:"))
+        self.visualization_combo = QComboBox()
+        self.visualization_combo.addItems([
+            "Actogram (48h double-plot)",
+            "Stacked Traces (36h)",
+            "Both"
+        ])
+        self.visualization_combo.setToolTip(
+            "Actogram: 48h double-plotted rows (L-D-L-D), each day appears twice\n"
+            "Stacked Traces: 36h view (L-D-L) with each day stacked vertically\n"
+            "Both: Actogram pages followed by stacked trace pages"
+        )
+        self.visualization_combo.setFixedWidth(220)
+        self.visualization_combo.currentIndexChanged.connect(self.on_visualization_changed)
+        options_layout.addWidget(self.visualization_combo)
+
+        # Vertical separator
+        separator = QFrame()
+        separator.setFrameShape(QFrame.Shape.VLine)
+        separator.setStyleSheet("color: #555555;")
+        options_layout.addWidget(separator)
+
+        # Sleep analysis checkbox
         self.sleep_analysis_checkbox = QCheckBox("Sleep Bout Analysis")
         self.sleep_analysis_checkbox.setChecked(True)
         self.sleep_analysis_checkbox.setToolTip("Analyze sleep fragmentation from Sleeping % data")
-        sleep_layout.addWidget(self.sleep_analysis_checkbox)
+        options_layout.addWidget(self.sleep_analysis_checkbox)
 
         # Threshold
-        sleep_layout.addWidget(QLabel("Threshold:"))
+        options_layout.addWidget(QLabel("Threshold:"))
         self.sleep_threshold_spin = QDoubleSpinBox()
         self.sleep_threshold_spin.setRange(0.1, 0.9)
         self.sleep_threshold_spin.setSingleStep(0.1)
         self.sleep_threshold_spin.setValue(0.5)
         self.sleep_threshold_spin.setToolTip("Sleep detection threshold (0-1)")
         self.sleep_threshold_spin.setFixedWidth(60)
-        sleep_layout.addWidget(self.sleep_threshold_spin)
+        options_layout.addWidget(self.sleep_threshold_spin)
 
         # Bin width
-        sleep_layout.addWidget(QLabel("Bin Width:"))
+        options_layout.addWidget(QLabel("Bin Width:"))
         self.sleep_bin_spin = QDoubleSpinBox()
         self.sleep_bin_spin.setRange(1.0, 30.0)
         self.sleep_bin_spin.setSingleStep(1.0)
@@ -382,7 +458,7 @@ class AnalysisTab(QWidget):
         self.sleep_bin_spin.setSuffix(" min")
         self.sleep_bin_spin.setToolTip("Histogram bin width in minutes")
         self.sleep_bin_spin.setFixedWidth(80)
-        sleep_layout.addWidget(self.sleep_bin_spin)
+        options_layout.addWidget(self.sleep_bin_spin)
 
         # Re-analyze button
         self.reanalyze_sleep_btn = QPushButton("Re-analyze Sleep")
@@ -390,10 +466,10 @@ class AnalysisTab(QWidget):
         self.reanalyze_sleep_btn.setEnabled(False)
         self.reanalyze_sleep_btn.clicked.connect(self.reanalyze_sleep)
         self.reanalyze_sleep_btn.setToolTip("Re-run sleep analysis with new parameters (uses cached data)")
-        sleep_layout.addWidget(self.reanalyze_sleep_btn)
+        options_layout.addWidget(self.reanalyze_sleep_btn)
 
-        sleep_layout.addStretch()
-        layout.addWidget(self.sleep_options_frame)
+        options_layout.addStretch()
+        layout.addWidget(self.options_frame)
 
         # === Animal Tabs (main viewing area) ===
         self.animal_tabs = QTabWidget()
@@ -582,6 +658,30 @@ class AnalysisTab(QWidget):
 
         print(f"[Sleep Analysis] Completed for {len(self.analyzed_data)} animals (threshold={threshold}, bin_width={bin_width})")
 
+    def _get_visualization_mode(self) -> str:
+        """Get the current visualization mode string from the combo box."""
+        text = self.visualization_combo.currentText()
+        if 'Actogram' in text:
+            return 'actogram'
+        elif 'Stacked' in text:
+            return 'stacked'
+        else:
+            return 'both'
+
+    def on_visualization_changed(self, index):
+        """Handle visualization mode change -- regenerate figures without re-analyzing."""
+        if not self.analyzed_data:
+            return
+
+        current_tab = self.animal_tabs.currentIndex()
+        self.update_progress("Regenerating figures...", 50)
+        self.populate_animal_tabs()
+        # Restore the tab the user was viewing
+        if current_tab >= 0 and current_tab < self.animal_tabs.count():
+            self.animal_tabs.setCurrentIndex(current_tab)
+        self.update_progress("Ready", 100)
+        self.timing_label.setText("")
+
     def reanalyze_sleep(self):
         """Re-run sleep analysis with new parameters and refresh figures."""
         if not self.analyzed_data:
@@ -623,7 +723,9 @@ class AnalysisTab(QWidget):
 
             self.update_progress(f"Rendering {animal_id}...", 70 + int(25 * idx / total_animals))
 
-            animal_widget = ScrollableFigureWidget(animal_id, animal_data)
+            viz_mode = self._get_visualization_mode()
+            animal_widget = ScrollableFigureWidget(animal_id, animal_data,
+                                                    visualization_mode=viz_mode)
             animal_widget.generate_and_display_figures(
                 progress_callback=lambda msg: self.update_progress(msg)
             )
@@ -964,7 +1066,8 @@ class AnalysisTab(QWidget):
                 source_file=self.current_files[0] if self.current_files else None,
                 figure_generator=figure_generator,
                 parallel=True,
-                progress_callback=self.update_progress
+                progress_callback=self.update_progress,
+                visualization_mode=self._get_visualization_mode()
             )
 
             export_time = time.time() - export_start
@@ -1567,6 +1670,76 @@ class ConsolidationTab(QWidget):
         # Action buttons row
         action_layout = QHBoxLayout()
 
+        # Layout style selector
+        layout_label = QLabel("Layout:")
+        layout_label.setStyleSheet("color: #ffffff; font-weight: bold;")
+        action_layout.addWidget(layout_label)
+
+        self.layout_style_combo = QComboBox()
+        self.layout_style_combo.addItems(["Classic", "Classic 48h", "Matrix", "Age Matrix"])
+        self.layout_style_combo.setStyleSheet("""
+            QComboBox {
+                background-color: #3c3c3c;
+                color: #ffffff;
+                border: 1px solid #555555;
+                border-radius: 4px;
+                padding: 4px 8px;
+                min-width: 100px;
+            }
+            QComboBox:hover {
+                border-color: #777777;
+            }
+            QComboBox::drop-down {
+                border: none;
+            }
+            QComboBox::down-arrow {
+                image: none;
+                border-left: 4px solid transparent;
+                border-right: 4px solid transparent;
+                border-top: 6px solid #ffffff;
+                margin-right: 6px;
+            }
+            QComboBox QAbstractItemView {
+                background-color: #3c3c3c;
+                color: #ffffff;
+                selection-background-color: #0078d4;
+            }
+        """)
+        self.layout_style_combo.setToolTip(
+            "Classic: 3 metrics per page with 36h stacked traces (L-D-L)\n"
+            "Classic 48h: 3 metrics per page with 48h traces (L-D-L-D)\n"
+            "Matrix: Daily trends across animals with individual traces\n"
+            "Age Matrix: Like Matrix but aligned by postnatal age (requires birth date)"
+        )
+        action_layout.addWidget(self.layout_style_combo)
+
+        action_layout.addSpacing(10)
+
+        # Smoothing control
+        smooth_label = QLabel("Smoothing:")
+        smooth_label.setStyleSheet("color: #ffffff; font-weight: bold;")
+        action_layout.addWidget(smooth_label)
+
+        from PyQt6.QtWidgets import QSpinBox
+        self.group_smoothing_spin = QSpinBox()
+        self.group_smoothing_spin.setRange(1, 120)
+        self.group_smoothing_spin.setValue(15)
+        self.group_smoothing_spin.setSuffix(" min")
+        self.group_smoothing_spin.setToolTip("Rolling average smoothing window (1 = no smoothing)")
+        self.group_smoothing_spin.setStyleSheet("""
+            QSpinBox {
+                background-color: #3c3c3c;
+                border: 1px solid #555555;
+                border-radius: 4px;
+                padding: 3px;
+                color: #ffffff;
+                min-width: 70px;
+            }
+        """)
+        action_layout.addWidget(self.group_smoothing_spin)
+
+        action_layout.addSpacing(10)
+
         self.preview_btn = QPushButton("Generate Preview")
         self.preview_btn.setStyleSheet(self.BUTTON_STYLE)
         self.preview_btn.setEnabled(False)
@@ -1701,8 +1874,21 @@ class ConsolidationTab(QWidget):
 
         self.file_list.clear()
 
-        # Recursively find all CageMetrics_*_Data.npz files
+        # Recursively find all CageMetrics NPZ data files
+        # Primary pattern: CageMetrics_*_Data.npz (standard naming)
         npz_files = list(self._scan_dir.rglob("CageMetrics_*_Data.npz"))
+
+        # Fallback: if no files found with standard naming, look for any .npz
+        # that contains metadata_json (i.e., individual animal data files)
+        if not npz_files:
+            import numpy as np
+            for npz_path in self._scan_dir.rglob("*.npz"):
+                try:
+                    with np.load(str(npz_path), allow_pickle=True) as data:
+                        if 'metadata_json' in data:
+                            npz_files.append(npz_path)
+                except Exception:
+                    continue
 
         # First pass: collect all metadata for cagemate cache
         npz_items = []
@@ -1987,11 +2173,15 @@ class ConsolidationTab(QWidget):
         try:
             from core.consolidator import Consolidator
             consolidator = Consolidator()
+            layout_style = self.layout_style_combo.currentText().lower().replace(" ", "_")  # "classic", "classic_48h", or "matrix"
+            smoothing_window = self.group_smoothing_spin.value()
             result = consolidator.consolidate(
                 npz_paths, save_path,
                 filter_criteria=self._filter_criteria,
                 save_npz=True,
-                save_pdf=True
+                save_pdf=True,
+                layout_style=layout_style,
+                smoothing_window=smoothing_window
             )
 
             # Build output message
@@ -2887,9 +3077,9 @@ class ConsolidationTab(QWidget):
         if total_count == 0:
             self.left_label.setText("NPZ Files Detected")
         elif visible_count == total_count:
-            self.left_label.setText(f"NPZ Files Detected (n={total_count})")
+            self.left_label.setText(f"NPZ Files Detected ({total_count} files)")
         else:
-            self.left_label.setText(f"NPZ Files Detected (n={total_count}, showing {visible_count})")
+            self.left_label.setText(f"NPZ Files Detected ({visible_count} of {total_count} match filters)")
 
     # === Preview Panel Methods ===
 
@@ -2950,35 +3140,90 @@ class ConsolidationTab(QWidget):
 
     def on_generate_preview(self):
         """Generate preview figures for selected experiments."""
+        from PyQt6.QtWidgets import QProgressDialog
+        from PyQt6.QtCore import Qt as QtCore_Qt
+
         if self.consolidate_list.count() == 0:
             return
+
+        n_files = self.consolidate_list.count()
+
+        # Create progress dialog
+        progress = QProgressDialog("Loading data files...", "Cancel", 0, 100, self)
+        progress.setWindowTitle("Generating Preview")
+        progress.setWindowModality(QtCore_Qt.WindowModality.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setMinimumWidth(350)
+        progress.setValue(0)
+        progress.show()
+        QApplication.processEvents()
 
         try:
             # Load full NPZ data for all selected files
             experiments = []
-            for i in range(self.consolidate_list.count()):
+            for i in range(n_files):
+                if progress.wasCanceled():
+                    return
+
                 item = self.consolidate_list.item(i)
                 if item:
                     path = self._get_item_path(item)
+                    progress.setLabelText(f"Loading file {i + 1} of {n_files}...")
+                    progress.setValue(int((i / n_files) * 30))  # 0-30% for loading
+                    QApplication.processEvents()
+
                     exp_data = self._load_npz_full(path)
                     if exp_data:
                         experiments.append(exp_data)
 
             if not experiments:
+                progress.close()
                 QMessageBox.warning(self, "Error", "No valid experiments to preview")
                 return
 
-            # Generate figures
+            if progress.wasCanceled():
+                return
+
+            # Generate figures with progress callback
             from core.consolidation_figure_generator import ConsolidationFigureGenerator
-            generator = ConsolidationFigureGenerator()
+            smoothing_window = self.group_smoothing_spin.value()
+            generator = ConsolidationFigureGenerator(smoothing_window=smoothing_window)
 
             filter_desc = self._filter_criteria.to_description() if self._filter_criteria else "No filters"
-            self._preview_figures = generator.generate_all_pages(experiments, filter_desc)
+            layout_style = self.layout_style_combo.currentText().lower().replace(" ", "_")
+
+            def on_progress(current, total, message):
+                if progress.wasCanceled():
+                    return
+                # Map figure generation to 30-90% of progress bar
+                pct = 30 + int((current / max(total, 1)) * 60)
+                progress.setValue(min(pct, 90))
+                progress.setLabelText(message)
+                QApplication.processEvents()
+
+            # Store for expand-all functionality
+            self._preview_experiments = experiments
+            self._preview_generator = generator
+
+            self._preview_figures = generator.generate_all_pages(
+                experiments, filter_desc, layout_style=layout_style,
+                progress_callback=on_progress)
+
+            if progress.wasCanceled():
+                return
 
             # Display in preview panel
+            progress.setLabelText("Rendering figures...")
+            progress.setValue(92)
+            QApplication.processEvents()
+
             self._display_preview_figures()
 
+            progress.setValue(100)
+            progress.close()
+
         except Exception as e:
+            progress.close()
             QMessageBox.critical(self, "Error", f"Preview generation failed:\n{str(e)}")
             import traceback
             traceback.print_exc()
@@ -3097,9 +3342,6 @@ class ConsolidationTab(QWidget):
 
     def _display_preview_figures(self):
         """Display generated preview figures in the preview panel."""
-        from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-        from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
-
         # Clear existing content
         while self.preview_container_layout.count():
             child = self.preview_container_layout.takeAt(0)
@@ -3120,21 +3362,86 @@ class ConsolidationTab(QWidget):
             title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             fig_layout.addWidget(title_label)
 
-            # Canvas
-            canvas = FigureCanvas(fig)
-            canvas.setMinimumHeight(600)
+            # SVG rendering for pixel-perfect vector display
+            svg_widget = SvgFigureWidget(fig)
+            fig_layout.addWidget(svg_widget)
 
-            # Toolbar
-            toolbar = NavigationToolbar(canvas, self)
-            toolbar.setStyleSheet("background-color: #2d2d2d;")
-
-            fig_layout.addWidget(toolbar)
-            fig_layout.addWidget(canvas)
 
             self.preview_container_layout.addWidget(fig_frame)
 
         # Re-apply scroll event filters on the main scroll area
         self.main_scroll.install_filter_on_new_widgets()
+
+    def _show_expanded_matrix(self, metric_name: str, is_age: bool):
+        """Show expanded matrix with all animals in a popup dialog."""
+        if not hasattr(self, '_preview_experiments') or not self._preview_experiments:
+            return
+
+        # Find the actual metric name (title may have been truncated)
+        from core.consolidation_figure_generator import ConsolidationFigureGenerator
+        generator = self._preview_generator
+        common_metrics = generator._get_common_metrics(self._preview_experiments)
+
+        # Match metric name (may be truncated in title)
+        actual_metric = None
+        for m in common_metrics:
+            if m.startswith(metric_name) or metric_name.startswith(m[:30]):
+                actual_metric = m
+                break
+        if actual_metric is None:
+            return
+
+        # Generate expanded figure with no animal limit
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            if is_age:
+                fig = generator.create_age_matrix_page(
+                    self._preview_experiments, actual_metric,
+                    max_animals=999)
+            else:
+                fig = generator.create_metric_matrix_page(
+                    self._preview_experiments, actual_metric,
+                    max_animals=999)
+        finally:
+            QApplication.restoreOverrideCursor()
+
+        if fig is None:
+            return
+
+        # Create popup dialog
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"All Animals - {actual_metric}")
+        dialog.setMinimumSize(1200, 800)
+        dialog.setStyleSheet("background-color: #1e1e1e;")
+
+        dlg_layout = QVBoxLayout(dialog)
+        dlg_layout.setContentsMargins(5, 5, 5, 5)
+
+        # Scrollable SVG view
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("QScrollArea { border: none; }")
+
+        svg_widget = SvgFigureWidget(fig)
+        scroll.setWidget(svg_widget)
+        dlg_layout.addWidget(scroll)
+
+        # Close button
+        close_btn = QPushButton("Close")
+        close_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #3c3c3c;
+                color: #ffffff;
+                border: 1px solid #555555;
+                border-radius: 4px;
+                padding: 6px 20px;
+            }
+            QPushButton:hover { background-color: #555555; }
+        """)
+        close_btn.clicked.connect(dialog.close)
+        dlg_layout.addWidget(close_btn, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        dialog.exec()
 
 
 class ComparisonTab(QWidget):
@@ -3201,6 +3508,7 @@ class ComparisonTab(QWidget):
         self._light_mode = False  # Dark mode by default
         self._show_statistics = True  # Show stats on bar charts by default
         self._statistics_results = []  # Store stats results for export
+        self._visualization_mode = 'cta_bars'  # 'cta_bars', 'actogram', or 'age_trends'
         self.setup_ui()
 
     def setup_ui(self):
@@ -3488,6 +3796,40 @@ class ComparisonTab(QWidget):
         group_row.addStretch()
         action_layout.addLayout(group_row)
 
+        # Visualization mode dropdown
+        viz_row = QHBoxLayout()
+        viz_label = QLabel("Visualization:")
+        viz_label.setStyleSheet("color: #cccccc;")
+        viz_row.addWidget(viz_label)
+        self.viz_mode_combo = QComboBox()
+        self.viz_mode_combo.addItems(["CTA + Bars", "Actogram", "Age Trends"])
+        self.viz_mode_combo.setStyleSheet("""
+            QComboBox {
+                background-color: #3c3c3c;
+                border: 1px solid #555555;
+                border-radius: 4px;
+                padding: 3px 8px;
+                color: #ffffff;
+            }
+            QComboBox::drop-down {
+                border: none;
+            }
+            QComboBox QAbstractItemView {
+                background-color: #3c3c3c;
+                color: #ffffff;
+                selection-background-color: #0078d4;
+            }
+        """)
+        self.viz_mode_combo.setToolTip(
+            "CTA + Bars: Circadian time averages and dark/light bar charts\n"
+            "Actogram: Population-level double-plotted actograms side-by-side\n"
+            "Age Trends: Overlaid age-based trends per group with statistics"
+        )
+        self.viz_mode_combo.currentIndexChanged.connect(self._on_viz_mode_changed)
+        viz_row.addWidget(self.viz_mode_combo)
+        viz_row.addStretch()
+        action_layout.addLayout(viz_row)
+
         # Light/Dark mode toggle
         self.light_mode_cb = QCheckBox("Light mode figures")
         self.light_mode_cb.setStyleSheet("color: #cccccc;")
@@ -3628,6 +3970,15 @@ class ComparisonTab(QWidget):
     def _on_show_stats_changed(self, checked):
         """Handle show statistics checkbox change."""
         self._show_statistics = checked
+
+    def _on_viz_mode_changed(self, index):
+        """Handle visualization mode combo change."""
+        modes = ['cta_bars', 'actogram', 'age_trends']
+        self._visualization_mode = modes[index] if index < len(modes) else 'cta_bars'
+        # Bar grouping only relevant for CTA + Bars mode
+        self.grouping_combo.setEnabled(index == 0)
+        # Statistics not applicable to actograms
+        self.show_stats_cb.setEnabled(index != 1)
 
     def _on_table_cell_changed(self, row, column):
         """Handle changes to table cells."""
@@ -4001,7 +4352,8 @@ class ComparisonTab(QWidget):
                 bar_grouping=self._bar_grouping,
                 light_mode=self._light_mode,
                 dataset_colors=dataset_colors,
-                show_statistics=self._show_statistics
+                show_statistics=self._show_statistics,
+                visualization_mode=self._visualization_mode
             )
             self._comparison_figures = generator.generate_all_pages(enabled_datasets)
             self._enabled_datasets_for_save = enabled_datasets  # Store for saving
@@ -4026,9 +4378,14 @@ class ComparisonTab(QWidget):
         settings = QSettings("PhysioMetrics", "CageMetrics")
         last_dir = settings.value("comparison_save_dir", str(Path.home()))
 
-        # Create compared subfolder
+        # Create compared subfolder (with parents in case path doesn't exist)
         compared_dir = Path(last_dir) / "compared"
-        compared_dir.mkdir(exist_ok=True)
+        try:
+            compared_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            # Fall back to home directory if path is invalid
+            compared_dir = Path.home() / "compared"
+            compared_dir.mkdir(parents=True, exist_ok=True)
 
         # Ask for save location (default to compared subfolder)
         file_path, selected_filter = QFileDialog.getSaveFileName(
@@ -4066,6 +4423,7 @@ class ComparisonTab(QWidget):
                 'smoothing_window': self._smoothing_window,
                 'bar_grouping': self._bar_grouping,
                 'light_mode': self._light_mode,
+                'visualization_mode': self._visualization_mode,
                 'datasets': []
             }
 
@@ -4124,8 +4482,6 @@ class ComparisonTab(QWidget):
             self.figures_container_layout.addWidget(placeholder)
             return
 
-        from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
-
         for title, fig in self._comparison_figures:
             # Create frame for each figure
             fig_frame = QFrame()
@@ -4145,15 +4501,9 @@ class ComparisonTab(QWidget):
             title_label.setStyleSheet("font-weight: bold; font-size: 13px; color: #ffffff;")
             frame_layout.addWidget(title_label)
 
-            # Canvas
-            canvas = FigureCanvasQTAgg(fig)
-            canvas.setMinimumHeight(500)
-            frame_layout.addWidget(canvas)
-
-            # Toolbar
-            toolbar = NavigationToolbar2QT(canvas, fig_frame)
-            toolbar.setStyleSheet("background-color: #2d2d2d;")
-            frame_layout.addWidget(toolbar)
+            # SVG rendering for pixel-perfect vector display
+            svg_widget = SvgFigureWidget(fig)
+            frame_layout.addWidget(svg_widget)
 
             self.figures_container_layout.addWidget(fig_frame)
 

@@ -52,9 +52,12 @@ class ComparisonFigureGenerator:
     SEM_ALPHA = 0.25
     MINUTES_PER_DAY = 1440
 
+    # Marker shapes for scatter points (one per dataset, up to 8)
+    DATASET_MARKERS = ['o', 's', '^', 'D', 'v', 'P', 'X', '*']
+
     def __init__(self, smoothing_window: int = 5, bar_grouping: str = 'dataset',
                  light_mode: bool = False, dataset_colors: List[str] = None,
-                 show_statistics: bool = True):
+                 show_statistics: bool = True, visualization_mode: str = 'cta_bars'):
         """
         Initialize the comparison figure generator.
 
@@ -64,11 +67,13 @@ class ComparisonFigureGenerator:
             light_mode: If True, use light background for figures
             dataset_colors: Optional list of colors for each dataset
             show_statistics: If True, add statistical annotations to bar charts
+            visualization_mode: 'cta_bars', 'actogram', or 'age_trends'
         """
         self.smoothing_window = smoothing_window
         self.bar_grouping = bar_grouping
         self.light_mode = light_mode
         self.show_statistics = show_statistics
+        self.visualization_mode = visualization_mode
 
         # Store all statistics results for export
         self.statistics_results = []
@@ -130,36 +135,69 @@ class ComparisonFigureGenerator:
         # Get common metrics across all datasets
         common_metrics = self._get_common_metrics(datasets)
 
-        # Pages 2+: Overlay CTA comparison plots (6 metrics per page in 2x3 grid)
-        metrics_per_page = 6
-        for page_idx in range(0, len(common_metrics), metrics_per_page):
-            page_metrics = common_metrics[page_idx:page_idx + metrics_per_page]
-            page_num = page_idx // metrics_per_page + 1
-            fig_cta = self.create_cta_comparison_page(datasets, page_metrics, page_num)
-            pages.append((f"CTA Comparison {page_num}", fig_cta))
+        if self.visualization_mode == 'actogram':
+            # Actogram mode: overlaid day-by-day CTAs + bar charts per metric
+            for metric_name in common_metrics:
+                metric_pages = self._generate_actogram_pages(datasets, metric_name)
+                pages.extend(metric_pages)
 
-        # Final page(s): Bar chart comparisons (show ALL metrics)
-        # Use multiple pages if needed, 12 metrics per page
-        bars_per_page = 12
-        for page_idx in range(0, len(common_metrics), bars_per_page):
-            page_metrics = common_metrics[page_idx:page_idx + bars_per_page]
-            page_num = page_idx // bars_per_page + 1
-            total_bar_pages = (len(common_metrics) + bars_per_page - 1) // bars_per_page
-            fig_bars = self.create_bar_comparison_page(datasets, page_metrics, page_num, total_bar_pages)
-            if total_bar_pages > 1:
-                pages.append((f"Dark/Light Comparison {page_num}", fig_bars))
+            # Statistics summary if enabled
+            if self.show_statistics and len(datasets) >= 2 and self.statistics_results:
+                fig_stats = self.create_statistics_summary_page(datasets)
+                pages.append(("Statistical Analysis", fig_stats))
+
+        elif self.visualization_mode == 'age_trends':
+            # Age trend mode: overlaid per-age CTAs + bar charts per metric
+            if self._any_dataset_has_age_data(datasets):
+                # Age coverage overview page
+                coverage_fig = self._create_age_coverage_comparison_page(datasets)
+                if coverage_fig is not None:
+                    pages.append(("Age Coverage Overview", coverage_fig))
+
+                for metric_name in common_metrics:
+                    metric_pages = self._generate_age_trend_pages(datasets, metric_name)
+                    pages.extend(metric_pages)
+
+                # Statistics summary if enabled
+                if self.show_statistics and len(datasets) >= 2 and self.statistics_results:
+                    fig_stats = self.create_statistics_summary_page(datasets)
+                    pages.append(("Statistical Analysis", fig_stats))
             else:
-                pages.append(("Dark/Light Comparison", fig_bars))
+                fig = self._create_no_age_data_page()
+                pages.append(("Age Trends", fig))
 
-        # Statistics summary page (if statistics are enabled and we have results)
-        if self.show_statistics and len(datasets) >= 2:
-            fig_stats = self.create_statistics_summary_page(datasets)
-            pages.append(("Statistical Analysis", fig_stats))
+        else:
+            # Default CTA + Bars mode
+            # Pages 2+: Overlay CTA comparison plots (6 metrics per page in 2x3 grid)
+            metrics_per_page = 6
+            for page_idx in range(0, len(common_metrics), metrics_per_page):
+                page_metrics = common_metrics[page_idx:page_idx + metrics_per_page]
+                page_num = page_idx // metrics_per_page + 1
+                fig_cta = self.create_cta_comparison_page(datasets, page_metrics, page_num)
+                pages.append((f"CTA Comparison {page_num}", fig_cta))
 
-        # Sleep analysis comparison page (if any datasets have sleep data)
-        fig_sleep = self.create_sleep_comparison_page(datasets)
-        if fig_sleep is not None:
-            pages.append(("Sleep Analysis Comparison", fig_sleep))
+            # Final page(s): Bar chart comparisons (show ALL metrics)
+            # Use multiple pages if needed, 12 metrics per page
+            bars_per_page = 12
+            for page_idx in range(0, len(common_metrics), bars_per_page):
+                page_metrics = common_metrics[page_idx:page_idx + bars_per_page]
+                page_num = page_idx // bars_per_page + 1
+                total_bar_pages = (len(common_metrics) + bars_per_page - 1) // bars_per_page
+                fig_bars = self.create_bar_comparison_page(datasets, page_metrics, page_num, total_bar_pages)
+                if total_bar_pages > 1:
+                    pages.append((f"Dark/Light Comparison {page_num}", fig_bars))
+                else:
+                    pages.append(("Dark/Light Comparison", fig_bars))
+
+            # Statistics summary page (if statistics are enabled and we have results)
+            if self.show_statistics and len(datasets) >= 2:
+                fig_stats = self.create_statistics_summary_page(datasets)
+                pages.append(("Statistical Analysis", fig_stats))
+
+            # Sleep analysis comparison page (if any datasets have sleep data)
+            fig_sleep = self.create_sleep_comparison_page(datasets)
+            if fig_sleep is not None:
+                pages.append(("Sleep Analysis Comparison", fig_sleep))
 
         return pages
 
@@ -204,7 +242,7 @@ class ComparisonFigureGenerator:
 
     def create_summary_page(self, datasets: List[Dict[str, Any]]) -> Figure:
         """Create summary page showing all datasets being compared."""
-        fig = Figure(figsize=(11, 8.5), facecolor=self.BG_COLOR)
+        fig = Figure(figsize=(11, 8.5), dpi=150, facecolor=self.BG_COLOR)
 
         n_datasets = len(datasets)
         fig.suptitle(f"Dataset Comparison ({n_datasets} datasets)",
@@ -295,7 +333,7 @@ class ComparisonFigureGenerator:
                                     metrics: List[str], page_num: int) -> Figure:
         """Create page with overlaid CTA traces for multiple datasets (36hr view, 2x3 grid)."""
         n_metrics = len(metrics)
-        fig = Figure(figsize=(11, 8.5), facecolor=self.BG_COLOR)
+        fig = Figure(figsize=(11, 8.5), dpi=150, facecolor=self.BG_COLOR)
 
         n_datasets = len(datasets)
         fig.suptitle(f"CTA Comparison (Page {page_num}) - Shading = SEM",
@@ -380,7 +418,7 @@ class ComparisonFigureGenerator:
         """Create page with bar chart comparisons of dark/light means."""
         n_metrics = len(metrics)
 
-        fig = Figure(figsize=(11, 8.5), facecolor=self.BG_COLOR)
+        fig = Figure(figsize=(11, 8.5), dpi=150, facecolor=self.BG_COLOR)
 
         grouping_text = "by Dataset" if self.bar_grouping == 'dataset' else "by Light/Dark"
         if total_pages > 1:
@@ -758,7 +796,7 @@ class ComparisonFigureGenerator:
 
     def create_statistics_summary_page(self, datasets: List[Dict[str, Any]]) -> Figure:
         """Create a summary page with all statistical test results."""
-        fig = Figure(figsize=(11, 8.5), facecolor=self.BG_COLOR)
+        fig = Figure(figsize=(11, 8.5), dpi=150, facecolor=self.BG_COLOR)
 
         fig.suptitle("Statistical Analysis Summary",
                      fontsize=14, fontweight='bold', color=self.TEXT_COLOR, y=0.97)
@@ -876,6 +914,1057 @@ class ComparisonFigureGenerator:
 
         return fig
 
+    # ========== Shared Daily Data Helpers ==========
+
+    def _extract_daily_data_for_dataset(self, dataset: Dict[str, Any],
+                                         key_base: str) -> List[Dict[str, Any]]:
+        """
+        Extract per-animal daily data from a consolidated dataset.
+
+        Returns:
+            List of dicts with keys: animal_idx, daily_data (n_days x 1440), n_days, age_at_start
+        """
+        n_days_arr = dataset.get(f'{key_base}_n_days_per_animal', np.array([]))
+        animal_metadata = dataset.get('animal_metadata', [])
+        if isinstance(animal_metadata, str):
+            import json as _json
+            animal_metadata = _json.loads(animal_metadata)
+
+        animals = []
+        for idx in range(len(n_days_arr)):
+            n_days = int(n_days_arr[idx])
+            if n_days == 0:
+                continue
+            daily_data = dataset.get(f'{key_base}_daily_{idx}', None)
+            if daily_data is None:
+                continue
+            daily_data = np.array(daily_data)
+            if daily_data.ndim == 1:
+                daily_data = daily_data.reshape(1, -1)
+
+            age_at_start = None
+            if idx < len(animal_metadata):
+                meta = animal_metadata[idx] if isinstance(animal_metadata[idx], dict) else {}
+                age_at_start = meta.get('age_days_at_start', None)
+
+            animals.append({
+                'animal_idx': idx,
+                'daily_data': daily_data,
+                'n_days': daily_data.shape[0],
+                'age_at_start': age_at_start
+            })
+        return animals
+
+    def _compute_population_daily_means(self, animal_list: List[Dict],
+                                         max_days: int) -> Tuple[List[np.ndarray], List[np.ndarray]]:
+        """
+        Compute population-average trace and SEM for each day.
+
+        Returns:
+            (day_means, day_sems) - each a list of 1440-length arrays.
+        """
+        day_means = []
+        day_sems = []
+        for day_idx in range(max_days):
+            traces = []
+            for animal in animal_list:
+                if day_idx < animal['n_days']:
+                    row = animal['daily_data'][day_idx]
+                    if len(row) == self.MINUTES_PER_DAY:
+                        traces.append(row)
+            if traces:
+                stacked = np.array(traces)
+                day_means.append(np.nanmean(stacked, axis=0))
+                n_valid = np.sum(~np.isnan(stacked), axis=0)
+                day_sems.append(np.nanstd(stacked, axis=0) / np.sqrt(np.maximum(n_valid, 1)))
+            else:
+                day_means.append(np.full(self.MINUTES_PER_DAY, np.nan))
+                day_sems.append(np.full(self.MINUTES_PER_DAY, np.nan))
+        return day_means, day_sems
+
+    def _draw_overlaid_48h_cta(self, ax, datasets: List[Dict[str, Any]],
+                                cta_key: str, sem_key: str, title: str,
+                                show_legend: bool = True):
+        """Draw overlaid 48h CTAs from multiple datasets on a single axes."""
+        # L-D-L-D shading
+        ax.axvspan(0, 12, facecolor=self.LIGHT_PHASE_COLOR, zorder=0)
+        ax.axvspan(12, 24, facecolor=self.DARK_PHASE_COLOR, zorder=0)
+        ax.axvspan(24, 36, facecolor=self.LIGHT_PHASE_COLOR, zorder=0)
+        ax.axvspan(36, 48, facecolor=self.DARK_PHASE_COLOR, zorder=0)
+
+        x_hours = np.arange(2 * self.MINUTES_PER_DAY) / 60
+
+        for ds_idx, ds in enumerate(datasets):
+            color = self.DATASET_COLORS[ds_idx % len(self.DATASET_COLORS)]
+            label = self._get_dataset_label(ds)
+            cta = ds.get(cta_key)
+            sem = ds.get(sem_key)
+
+            if cta is None or len(cta) != self.MINUTES_PER_DAY:
+                continue
+
+            smoothed = self._smooth_data(cta)
+            cta_48h = np.concatenate([smoothed, smoothed])
+            ax.plot(x_hours, cta_48h, color=color, linewidth=1.2,
+                    label=label, alpha=0.9)
+
+            if sem is not None and len(sem) == self.MINUTES_PER_DAY:
+                smoothed_sem = self._smooth_data(sem)
+                sem_48h = np.concatenate([smoothed_sem, smoothed_sem])
+                ax.fill_between(x_hours, cta_48h - sem_48h, cta_48h + sem_48h,
+                               color=color, alpha=self.SEM_ALPHA)
+
+        ax.set_xlim(0, 48)
+        ax.set_xticks([0, 12, 24, 36, 48])
+        ax.set_xticklabels(['ZT0', 'ZT12', 'ZT24', 'ZT36', 'ZT48'], fontsize=6)
+        ax.set_title(title, fontsize=8, fontweight='bold', color=self.TEXT_COLOR, pad=3)
+        ax.tick_params(colors=self.TEXT_COLOR, labelsize=6)
+
+        if show_legend:
+            legend = ax.legend(loc='upper right', fontsize=5, framealpha=0.8,
+                               facecolor=self.BG_COLOR, edgecolor=self.GRID_COLOR,
+                               labelcolor=self.TEXT_COLOR)
+            legend.set_draggable(True)
+
+        for spine in ax.spines.values():
+            spine.set_color(self.GRID_COLOR)
+
+    def _draw_overlaid_day_cta(self, ax, all_day_means: List[List[np.ndarray]],
+                                all_day_sems: List[List[np.ndarray]],
+                                datasets: List[Dict[str, Any]],
+                                day_idx: int, title: str,
+                                show_legend: bool = False):
+        """
+        Draw overlaid 48h double-plotted CTA for a specific day pair across datasets.
+
+        all_day_means[ds_idx] = list of 1440-length arrays per day for that dataset.
+        all_day_sems[ds_idx] = corresponding SEM arrays.
+        day_idx = the starting day index for the double plot.
+        """
+        # L-D-L-D shading
+        ax.axvspan(0, 12, facecolor=self.LIGHT_PHASE_COLOR, zorder=0)
+        ax.axvspan(12, 24, facecolor=self.DARK_PHASE_COLOR, zorder=0)
+        ax.axvspan(24, 36, facecolor=self.LIGHT_PHASE_COLOR, zorder=0)
+        ax.axvspan(36, 48, facecolor=self.DARK_PHASE_COLOR, zorder=0)
+
+        x_hours = np.arange(2 * self.MINUTES_PER_DAY) / 60
+
+        for ds_idx, ds in enumerate(datasets):
+            color = self.DATASET_COLORS[ds_idx % len(self.DATASET_COLORS)]
+            label = self._get_dataset_label(ds)
+            day_means = all_day_means[ds_idx]
+            day_sems = all_day_sems[ds_idx]
+
+            if day_idx >= len(day_means):
+                continue
+
+            trace_first = self._smooth_data(day_means[day_idx])
+            if np.all(np.isnan(trace_first)):
+                continue
+
+            if day_idx + 1 < len(day_means):
+                trace_second = self._smooth_data(day_means[day_idx + 1])
+            else:
+                trace_second = np.full(self.MINUTES_PER_DAY, np.nan)
+
+            trace_48h = np.concatenate([trace_first, trace_second])
+            ax.plot(x_hours, trace_48h, color=color, linewidth=1.2,
+                    label=label, alpha=0.9)
+
+            # SEM shading
+            sem_first = self._smooth_data(day_sems[day_idx]) if day_idx < len(day_sems) else np.zeros(self.MINUTES_PER_DAY)
+            if day_idx + 1 < len(day_sems):
+                sem_second = self._smooth_data(day_sems[day_idx + 1])
+            else:
+                sem_second = np.full(self.MINUTES_PER_DAY, np.nan)
+            sem_48h = np.concatenate([sem_first, sem_second])
+            ax.fill_between(x_hours, trace_48h - sem_48h, trace_48h + sem_48h,
+                           color=color, alpha=self.SEM_ALPHA)
+
+        ax.set_xlim(0, 48)
+        ax.set_xticks([0, 12, 24, 36, 48])
+        ax.set_xticklabels(['ZT0', 'ZT12', 'ZT24', 'ZT36', 'ZT48'], fontsize=6)
+        ax.set_title(title, fontsize=8, fontweight='bold', color=self.TEXT_COLOR, pad=3)
+        ax.tick_params(colors=self.TEXT_COLOR, labelsize=6)
+
+        if show_legend:
+            legend = ax.legend(loc='upper right', fontsize=5, framealpha=0.8,
+                               facecolor=self.BG_COLOR, edgecolor=self.GRID_COLOR,
+                               labelcolor=self.TEXT_COLOR)
+            legend.set_draggable(True)
+
+        for spine in ax.spines.values():
+            spine.set_color(self.GRID_COLOR)
+
+    # ========== Actogram Comparison ==========
+
+    def _generate_actogram_pages(self, datasets: List[Dict[str, Any]],
+                                  metric_name: str) -> List[Tuple[str, Figure]]:
+        """
+        Generate actogram comparison pages for one metric.
+
+        Layout per page: 4 columns x 2 rows of overlaid 48h double-plotted CTAs.
+        Columns = day pairs (D1-2, D2-3, ...) + Grand Average CTA as last panel.
+        All datasets overlaid on each subplot.
+        Final page includes bar chart of per-day light/dark means with stats.
+
+        Returns list of (title, figure) tuples.
+        """
+        key_base = self._clean_metric_name(metric_name)
+        n_datasets = len(datasets)
+        pages = []
+
+        # Extract daily data for all datasets and compute per-day population means + SEMs
+        all_day_means = []  # per dataset: list of 1440-length arrays
+        all_day_sems = []   # per dataset: list of 1440-length SEM arrays
+        max_days = 0
+        has_any_data = False
+
+        for ds in datasets:
+            animals = self._extract_daily_data_for_dataset(ds, key_base)
+            if animals:
+                ds_max = max(a['n_days'] for a in animals)
+                max_days = max(max_days, ds_max)
+                day_means, day_sems = self._compute_population_daily_means(animals, ds_max)
+                all_day_means.append(day_means)
+                all_day_sems.append(day_sems)
+                has_any_data = True
+            else:
+                all_day_means.append([])
+                all_day_sems.append([])
+
+        if not has_any_data or max_days < 1:
+            fig = Figure(figsize=(11, 8.5), dpi=150, facecolor=self.BG_COLOR)
+            ax = fig.add_axes([0.1, 0.1, 0.8, 0.8])
+            ax.set_facecolor(self.BG_COLOR)
+            ax.axis('off')
+            ax.text(0.5, 0.5, f"No daily data available for {metric_name}",
+                    ha='center', va='center', fontsize=12, color=self.TEXT_COLOR,
+                    transform=ax.transAxes)
+            pages.append((f"Actogram: {metric_name}", fig))
+            return pages
+
+        # Build list of panels: one per day pair + grand average
+        # Day pairs: D1-2, D2-3, ..., D(n-1)-n
+        n_day_pairs = max_days  # day 0..max_days-1, each double-plotted
+        panel_count = n_day_pairs + 1  # +1 for grand average CTA
+
+        # Layout: 4 columns, 2 rows of CTAs per page
+        cols_per_page = 4
+        rows_per_page = 2
+        panels_per_page = cols_per_page * rows_per_page  # 8
+
+        # Generate CTA grid pages
+        panel_idx = 0
+        page_num = 0
+
+        while panel_idx < panel_count:
+            page_num += 1
+            panels_this_page = min(panels_per_page, panel_count - panel_idx)
+            n_rows = (panels_this_page + cols_per_page - 1) // cols_per_page
+
+            fig = Figure(figsize=(11, 4.5 * n_rows), dpi=150, facecolor=self.BG_COLOR)
+            fig.suptitle(f"Actogram: {metric_name} (Page {page_num})",
+                         fontsize=14, fontweight='bold', color=self.TEXT_COLOR, y=0.98)
+
+            gs = GridSpec(n_rows, cols_per_page, figure=fig,
+                          hspace=0.35, wspace=0.25,
+                          left=0.06, right=0.94, top=0.92, bottom=0.06)
+
+            for slot in range(panels_this_page):
+                cur = panel_idx + slot
+                row = slot // cols_per_page
+                col = slot % cols_per_page
+
+                ax = fig.add_subplot(gs[row, col])
+                ax.set_facecolor(self.BG_COLOR)
+
+                if cur < n_day_pairs:
+                    # Day pair CTA
+                    day_i = cur
+                    title = f'D{day_i+1}-{day_i+2}'
+                    self._draw_overlaid_day_cta(ax, all_day_means, all_day_sems,
+                                                 datasets, day_i, title,
+                                                 show_legend=(cur == 0))
+                else:
+                    # Grand average CTA (last panel)
+                    self._draw_overlaid_48h_cta(
+                        ax, datasets,
+                        f'{key_base}_grand_cta', f'{key_base}_grand_sem',
+                        'Grand Average', show_legend=(panel_idx == 0 and slot == 0))
+
+            panel_idx += panels_this_page
+            pages.append((f"Actogram: {metric_name} p{page_num}", fig))
+
+        # Bar chart page: per-day + grand average light/dark means
+        bar_fig = self._create_actogram_bar_page(
+            datasets, all_day_means, key_base, metric_name, max_days)
+        pages.append((f"Actogram Bars: {metric_name}", bar_fig))
+
+        return pages
+
+    def _create_actogram_bar_page(self, datasets: List[Dict[str, Any]],
+                                    all_day_means: List[List[np.ndarray]],
+                                    key_base: str, metric_name: str,
+                                    max_days: int) -> Figure:
+        """
+        Create bar chart page for actogram mode.
+
+        Two bar charts (Dark / Light) showing per-day + grand average means
+        for each dataset, with ANOVA stats.
+        """
+        n_datasets = len(datasets)
+
+        # Compute per-day light/dark means and raw values for each dataset
+        # day_labels: D1, D2, ..., Dn, Grand Avg
+        day_labels = [f'D{d+1}' for d in range(max_days)] + ['Grand\nAvg']
+        n_groups = max_days + 1  # days + grand avg
+
+        # For each dataset, for each day: collect animal-level light/dark means
+        # all_dark[ds_idx][group_idx] = array of per-animal means
+        all_dark = [[] for _ in range(n_datasets)]
+        all_light = [[] for _ in range(n_datasets)]
+
+        for ds_idx, ds in enumerate(datasets):
+            animals = self._extract_daily_data_for_dataset(ds, key_base)
+
+            for day_idx in range(max_days):
+                dark_vals = []
+                light_vals = []
+                for animal in animals:
+                    if day_idx < animal['n_days']:
+                        trace = animal['daily_data'][day_idx]
+                        if len(trace) == self.MINUTES_PER_DAY:
+                            lm = np.nanmean(trace[:720])
+                            dm = np.nanmean(trace[720:])
+                            if not np.isnan(lm):
+                                light_vals.append(lm)
+                            if not np.isnan(dm):
+                                dark_vals.append(dm)
+                all_dark[ds_idx].append(np.array(dark_vals))
+                all_light[ds_idx].append(np.array(light_vals))
+
+            # Grand average: use the precomputed dark/light means arrays
+            dark_arr = ds.get(f'{key_base}_dark_means', np.array([]))
+            light_arr = ds.get(f'{key_base}_light_means', np.array([]))
+            all_dark[ds_idx].append(dark_arr[~np.isnan(dark_arr)] if len(dark_arr) > 0 else np.array([]))
+            all_light[ds_idx].append(light_arr[~np.isnan(light_arr)] if len(light_arr) > 0 else np.array([]))
+
+        # Figure with two rows: Dark phase, Light phase
+        fig = Figure(figsize=(max(11, n_groups * 0.8 + 2), 8.5), dpi=150,
+                     facecolor=self.BG_COLOR)
+        fig.suptitle(f"Daily Means: {metric_name}",
+                     fontsize=14, fontweight='bold', color=self.TEXT_COLOR, y=0.97)
+
+        gs = GridSpec(2, 1, figure=fig, hspace=0.35,
+                      left=0.07, right=0.95, top=0.91, bottom=0.08)
+
+        error_color = '#000000' if self.light_mode else '#ffffff'
+        error_kw = {'elinewidth': 1.0, 'capthick': 1.0, 'ecolor': error_color}
+
+        for row_idx, (phase, phase_key, all_phase) in enumerate([
+            ('Dark Phase', 'dark', all_dark), ('Light Phase', 'light', all_light)
+        ]):
+            ax = fig.add_subplot(gs[row_idx])
+            ax.set_facecolor(self.BG_COLOR)
+
+            x_base = np.arange(n_groups)
+            total_width = 0.8
+            bar_width = total_width / n_datasets
+
+            # Dot color for individual data points
+            dot_color = '#000000' if self.light_mode else '#ffffff'
+
+            for ds_idx, ds in enumerate(datasets):
+                color = self.DATASET_COLORS[ds_idx % len(self.DATASET_COLORS)]
+                label = self._get_dataset_label(ds) if row_idx == 0 else None
+
+                means = []
+                sems = []
+                for g in range(n_groups):
+                    arr = all_phase[ds_idx][g]
+                    if len(arr) > 0:
+                        means.append(np.mean(arr))
+                        sems.append(np.std(arr) / np.sqrt(len(arr)) if len(arr) > 1 else 0)
+                    else:
+                        means.append(0)
+                        sems.append(0)
+
+                offset = (ds_idx - n_datasets / 2 + 0.5) * bar_width
+                ax.bar(x_base + offset, means, bar_width * 0.9,
+                       yerr=sems, capsize=2, color=color, alpha=0.8,
+                       label=label, error_kw=error_kw)
+
+                # Scatter individual data points
+                for g in range(n_groups):
+                    arr = all_phase[ds_idx][g]
+                    if len(arr) > 0:
+                        jitter = np.random.default_rng(ds_idx * 1000 + g).uniform(
+                            -bar_width * 0.25, bar_width * 0.25, size=len(arr))
+                        marker = self.DATASET_MARKERS[ds_idx % len(self.DATASET_MARKERS)]
+                        ax.scatter(np.full(len(arr), x_base[g] + offset) + jitter,
+                                  arr, color=dot_color, s=12, alpha=0.6,
+                                  zorder=5, edgecolors='none', marker=marker)
+
+            # Statistics per group — stagger brackets to avoid overlap
+            if self.show_statistics and n_datasets >= 2:
+                dataset_labels = [self._get_dataset_label(ds) for ds in datasets]
+                # Compute global max height across all groups for consistent bracket spacing
+                global_max = 0
+                for g in range(n_groups):
+                    for ds_idx in range(n_datasets):
+                        arr = all_phase[ds_idx][g]
+                        if len(arr) > 0:
+                            h = np.mean(arr) + (np.std(arr) / np.sqrt(len(arr)) if len(arr) > 1 else 0)
+                            # Also consider max data point
+                            h = max(h, np.max(arr))
+                            global_max = max(global_max, h)
+
+                bracket_spacing = global_max * 0.08 if global_max > 0 else 0.1
+
+                for g in range(n_groups):
+                    raw_groups = [all_phase[ds_idx][g] for ds_idx in range(n_datasets)]
+                    stats = self._compute_statistics(raw_groups)
+
+                    grp_label = day_labels[g].replace('\n', ' ')
+                    bracket_level = 0
+                    for (i, j), p_value in sorted(stats['pairwise'].items()):
+                        self.statistics_results.append({
+                            'metric': metric_name,
+                            'phase': phase_key.capitalize(),
+                            'comparison': f'{dataset_labels[i]} vs {dataset_labels[j]} ({grp_label})',
+                            'group1': dataset_labels[i],
+                            'group2': dataset_labels[j],
+                            'group1_mean': np.mean(raw_groups[i]) if len(raw_groups[i]) > 0 else np.nan,
+                            'group1_sem': np.std(raw_groups[i]) / np.sqrt(len(raw_groups[i])) if len(raw_groups[i]) > 1 else 0,
+                            'group2_mean': np.mean(raw_groups[j]) if len(raw_groups[j]) > 0 else np.nan,
+                            'group2_sem': np.std(raw_groups[j]) / np.sqrt(len(raw_groups[j])) if len(raw_groups[j]) > 1 else 0,
+                            'test': 't-test' if n_datasets == 2 else 't-test (Bonferroni)',
+                            'p_value': p_value,
+                            'significance': self._get_significance_symbol(p_value),
+                            'anova_p': stats.get('anova_p')
+                        })
+
+                        symbol = self._get_significance_symbol(p_value)
+                        if symbol and symbol != 'ns':
+                            offset_i = (i - n_datasets / 2 + 0.5) * bar_width
+                            offset_j = (j - n_datasets / 2 + 0.5) * bar_width
+                            # Local max for this group position
+                            local_max = max(
+                                (np.max(raw_groups[k]) if len(raw_groups[k]) > 0 else 0)
+                                for k in range(n_datasets)
+                            )
+                            y_pos = local_max * 1.05 + bracket_level * bracket_spacing
+                            self._add_significance_bracket(
+                                ax, x_base[g] + offset_i, x_base[g] + offset_j,
+                                y_pos, symbol)
+                            bracket_level += 1
+
+            # Add vertical line before grand average (brighter)
+            ax.axvline(x=max_days - 0.5, color='#888888', linestyle='--',
+                       linewidth=1.2, alpha=0.9)
+
+            ax.set_title(phase, fontsize=10, fontweight='bold',
+                        color=self.TEXT_COLOR, pad=5)
+            ax.set_xticks(x_base)
+            ax.set_xticklabels(day_labels, fontsize=7)
+            ax.tick_params(colors=self.TEXT_COLOR, labelsize=7)
+
+            if row_idx == 0:
+                legend = ax.legend(loc='upper right', fontsize=6, framealpha=0.8,
+                                   facecolor=self.BG_COLOR, edgecolor=self.GRID_COLOR,
+                                   labelcolor=self.TEXT_COLOR)
+                legend.set_draggable(True)
+
+            for spine in ax.spines.values():
+                spine.set_color(self.GRID_COLOR)
+
+        return fig
+
+    # ========== Age Trend Comparison ==========
+
+    def _any_dataset_has_age_data(self, datasets: List[Dict[str, Any]]) -> bool:
+        """Check if any dataset has animal age data."""
+        for ds in datasets:
+            animal_metadata = ds.get('animal_metadata', [])
+            if isinstance(animal_metadata, str):
+                import json as _json
+                animal_metadata = _json.loads(animal_metadata)
+            for meta in animal_metadata:
+                if isinstance(meta, dict) and meta.get('age_days_at_start') is not None:
+                    return True
+        return False
+
+    def _create_no_age_data_page(self) -> Figure:
+        """Create an info page indicating no age data is available."""
+        fig = Figure(figsize=(11, 8.5), dpi=150, facecolor=self.BG_COLOR)
+        ax = fig.add_axes([0.1, 0.1, 0.8, 0.8])
+        ax.set_facecolor(self.BG_COLOR)
+        ax.axis('off')
+        ax.text(0.5, 0.55, "No Age Data Available",
+                ha='center', va='center', fontsize=18, fontweight='bold',
+                color=self.TEXT_COLOR, transform=ax.transAxes)
+        ax.text(0.5, 0.42,
+                "None of the loaded datasets contain animal age information.\n"
+                "Age data (age_days_at_start) must be present in the source NPZ files\n"
+                "for age trend analysis.",
+                ha='center', va='center', fontsize=11, color='#aaaaaa',
+                transform=ax.transAxes, linespacing=1.5)
+        return fig
+
+    def _create_age_coverage_comparison_page(self, datasets: List[Dict[str, Any]]) -> Optional[Figure]:
+        """
+        Create an age coverage overview page comparing data availability across datasets.
+
+        Top panel: Gantt-style chart with one row per animal, grouped by dataset.
+        Each dataset uses its own color. Segments are colored where data exists.
+        Bottom panel: Stacked bar chart showing animal count per age per dataset.
+
+        Returns:
+            Figure or None if no age data available
+        """
+        from matplotlib.patches import Patch
+
+        NO_DATA_COLOR = '#3a3a3a' if not self.light_mode else '#e0e0e0'
+
+        # Collect per-dataset animal coverage info
+        dataset_animals = []  # list of (ds_idx, label, color, animals_list)
+
+        for ds_idx, ds in enumerate(datasets):
+            color = self.DATASET_COLORS[ds_idx % len(self.DATASET_COLORS)]
+            label = self._get_dataset_label(ds)
+            animal_metadata = ds.get('animal_metadata', [])
+            if isinstance(animal_metadata, str):
+                import json as _json
+                animal_metadata = _json.loads(animal_metadata)
+
+            # Use first available metric to check daily data
+            metric_names = list(ds.get('metric_names', []))
+            if hasattr(metric_names, 'tolist'):
+                metric_names = metric_names.tolist()
+
+            animals = []
+            for idx in range(len(animal_metadata)):
+                meta = animal_metadata[idx] if isinstance(animal_metadata[idx], dict) else {}
+                age_at_start = meta.get('age_days_at_start', None)
+                if age_at_start is None:
+                    continue
+                age_at_start = int(age_at_start)
+
+                animal_id = meta.get('animal_id', f'Animal {idx}')
+
+                # Find daily data from any metric
+                n_days = 0
+                ages_with_data = set()
+                for mn in metric_names[:1]:  # Check first metric
+                    key_base = self._clean_metric_name(mn)
+                    daily_key = f'{key_base}_daily_{idx}'
+                    daily_data = ds.get(daily_key, None)
+                    if daily_data is not None:
+                        daily_data = np.array(daily_data)
+                        if daily_data.ndim == 1:
+                            daily_data = daily_data.reshape(1, -1)
+                        n_days = daily_data.shape[0]
+                        for d in range(n_days):
+                            if (daily_data[d].shape[0] == self.MINUTES_PER_DAY and
+                                    not np.all(np.isnan(daily_data[d]))):
+                                ages_with_data.add(age_at_start + d)
+
+                if n_days > 0:
+                    animals.append({
+                        'animal_id': animal_id,
+                        'age_at_start': age_at_start,
+                        'n_days': n_days,
+                        'ages_with_data': ages_with_data,
+                    })
+
+            if animals:
+                animals.sort(key=lambda a: a['age_at_start'])
+                dataset_animals.append((ds_idx, label, color, animals))
+
+        if not dataset_animals:
+            return None
+
+        # Compute global age range
+        all_ages = set()
+        for _, _, _, animals in dataset_animals:
+            for a in animals:
+                all_ages.update(a['ages_with_data'])
+        if not all_ages:
+            return None
+
+        min_age = min(all_ages)
+        max_age = max(all_ages)
+        age_range = list(range(min_age, max_age + 1))
+        n_ages = len(age_range)
+
+        # Total number of animal rows (with group separators)
+        total_animals = sum(len(animals) for _, _, _, animals in dataset_animals)
+        n_separators = len(dataset_animals) - 1
+        total_rows = total_animals + n_separators
+
+        # Create figure
+        fig_height = max(6, 2.5 + total_rows * 0.3)
+        fig = Figure(figsize=(12, fig_height), dpi=150, facecolor=self.BG_COLOR)
+        gs = GridSpec(2, 1, figure=fig, height_ratios=[3, 1], hspace=0.3,
+                      left=0.12, right=0.95, top=0.93, bottom=0.06)
+
+        # === Top panel: Gantt-style coverage chart ===
+        ax_gantt = fig.add_subplot(gs[0])
+        ax_gantt.set_facecolor(self.BG_COLOR)
+
+        y_labels = []
+        y_pos = total_rows - 1  # Start from top
+
+        for grp_idx, (ds_idx, label, color, animals) in enumerate(dataset_animals):
+            if grp_idx > 0:
+                # Draw separator line
+                ax_gantt.axhline(y=y_pos + 0.5, color=self.GRID_COLOR,
+                                 linewidth=0.5, linestyle='--', alpha=0.5)
+                y_pos -= 1  # Skip a row for separator
+
+            for animal in animals:
+                animal_min = animal['age_at_start']
+                animal_max = animal_min + animal['n_days'] - 1
+
+                for age in age_range:
+                    x = age - min_age
+                    if age in animal['ages_with_data']:
+                        ax_gantt.barh(y_pos, 1, left=x, height=0.7,
+                                     color=color, edgecolor='none', linewidth=0)
+                    elif animal_min <= age <= animal_max:
+                        ax_gantt.barh(y_pos, 1, left=x, height=0.7,
+                                     color=NO_DATA_COLOR, edgecolor='none', linewidth=0)
+
+                y_labels.append((y_pos, animal['animal_id'][:15]))
+                y_pos -= 1
+
+        # Y-axis labels
+        ytick_positions = [pos for pos, _ in y_labels]
+        ytick_labels = [lbl for _, lbl in y_labels]
+        ax_gantt.set_yticks(ytick_positions)
+        ax_gantt.set_yticklabels(ytick_labels, fontsize=5, color=self.TEXT_COLOR)
+        ax_gantt.set_ylim(-0.5, total_rows - 0.5)
+
+        # X-axis: age labels
+        ax_gantt.set_xlim(-0.5, n_ages - 0.5)
+        tick_step = max(1, n_ages // 25)
+        tick_positions = list(range(0, n_ages, tick_step))
+        ax_gantt.set_xticks(tick_positions)
+        ax_gantt.set_xticklabels([f'P{age_range[t]}' for t in tick_positions],
+                                 fontsize=6, color=self.TEXT_COLOR, rotation=45, ha='right')
+
+        ax_gantt.set_title(
+            f"Age Coverage Overview (n={total_animals} animals, P{min_age}\u2013P{max_age})",
+            fontsize=12, fontweight='bold', color=self.TEXT_COLOR, pad=10)
+        ax_gantt.tick_params(colors=self.TEXT_COLOR, labelsize=6)
+        for spine in ax_gantt.spines.values():
+            spine.set_color(self.GRID_COLOR)
+
+        # Legend
+        legend_elements = [
+            Patch(facecolor=color, label=label)
+            for _, label, color, _ in dataset_animals
+        ]
+        legend_elements.append(Patch(facecolor=NO_DATA_COLOR, label='Recording period (no data)'))
+        ax_gantt.legend(handles=legend_elements, fontsize=7, loc='lower right',
+                       framealpha=0.3, labelcolor=self.TEXT_COLOR, edgecolor=self.GRID_COLOR)
+
+        # === Bottom panel: Animal count per age per dataset (stacked) ===
+        ax_count = fig.add_subplot(gs[1])
+        ax_count.set_facecolor(self.BG_COLOR)
+
+        x_positions = np.arange(n_ages)
+        bottom = np.zeros(n_ages)
+
+        for ds_idx, label, color, animals in dataset_animals:
+            counts = np.array([
+                sum(1 for a in animals if age in a['ages_with_data'])
+                for age in age_range
+            ])
+            ax_count.bar(x_positions, counts, width=0.8, bottom=bottom,
+                        color=color, alpha=0.7, edgecolor='none', label=label)
+            bottom += counts
+
+        ax_count.set_xlim(-0.5, n_ages - 0.5)
+        ax_count.set_xticks(tick_positions)
+        ax_count.set_xticklabels([f'P{age_range[t]}' for t in tick_positions],
+                                 fontsize=6, color=self.TEXT_COLOR, rotation=45, ha='right')
+        ax_count.set_xlabel("Postnatal Age", fontsize=9, color=self.TEXT_COLOR)
+        ax_count.set_ylabel("n animals", fontsize=8, color=self.TEXT_COLOR)
+        ax_count.set_title("Animals with Data at Each Age", fontsize=10,
+                          fontweight='bold', color=self.TEXT_COLOR, pad=5)
+        ax_count.tick_params(colors=self.TEXT_COLOR, labelsize=6)
+        ax_count.set_ylim(0, np.max(bottom) * 1.2 if np.max(bottom) > 0 else 1)
+        for spine in ax_count.spines.values():
+            spine.set_color(self.GRID_COLOR)
+        ax_count.legend(fontsize=6, loc='upper right', framealpha=0.3,
+                       labelcolor=self.TEXT_COLOR, edgecolor=self.GRID_COLOR)
+
+        return fig
+
+    def _compute_age_ctas_for_dataset(self, dataset: Dict[str, Any],
+                                       key_base: str) -> Dict[int, Dict[str, Any]]:
+        """
+        Compute per-postnatal-age data for a dataset.
+
+        Returns:
+            Dict mapping age (int) -> {
+                'traces': list of 1440-length arrays (one per animal-day at this age),
+                'mean_cta': 1440-length array (nanmean across traces),
+                'sem_cta': 1440-length array,
+                'dark_values': list of per-animal dark phase means,
+                'light_values': list of per-animal light phase means,
+                'dark_mean': float, 'dark_sem': float,
+                'light_mean': float, 'light_sem': float,
+                'n_animals': int
+            }
+        """
+        animals = self._extract_daily_data_for_dataset(dataset, key_base)
+        age_data = {}
+
+        for animal in animals:
+            age_start = animal.get('age_at_start')
+            if age_start is None:
+                continue
+            age_start = int(age_start)
+
+            for day_idx in range(animal['n_days']):
+                age = age_start + day_idx
+                day_trace = animal['daily_data'][day_idx]
+                if len(day_trace) != self.MINUTES_PER_DAY:
+                    continue
+
+                if age not in age_data:
+                    age_data[age] = {'traces': [], 'dark_values': [], 'light_values': []}
+
+                age_data[age]['traces'].append(day_trace)
+
+                light_mean = np.nanmean(day_trace[:720])
+                dark_mean = np.nanmean(day_trace[720:])
+                if not np.isnan(dark_mean):
+                    age_data[age]['dark_values'].append(dark_mean)
+                if not np.isnan(light_mean):
+                    age_data[age]['light_values'].append(light_mean)
+
+        # Compute summary stats per age
+        for age, d in age_data.items():
+            stacked = np.array(d['traces'])
+            d['mean_cta'] = np.nanmean(stacked, axis=0)
+            n_valid = np.sum(~np.isnan(stacked), axis=0)
+            d['sem_cta'] = np.nanstd(stacked, axis=0) / np.sqrt(np.maximum(n_valid, 1))
+
+            dark_arr = np.array(d['dark_values'])
+            light_arr = np.array(d['light_values'])
+            d['dark_mean'] = np.mean(dark_arr) if len(dark_arr) > 0 else np.nan
+            d['dark_sem'] = np.std(dark_arr) / np.sqrt(len(dark_arr)) if len(dark_arr) > 1 else 0.0
+            d['light_mean'] = np.mean(light_arr) if len(light_arr) > 0 else np.nan
+            d['light_sem'] = np.std(light_arr) / np.sqrt(len(light_arr)) if len(light_arr) > 1 else 0.0
+            d['n_animals'] = len(d['traces'])
+
+        return age_data
+
+    def _draw_overlaid_age_cta(self, ax, all_age_data: List[Dict],
+                                datasets: List[Dict[str, Any]],
+                                age: int, title: str,
+                                show_legend: bool = False):
+        """Draw overlaid 48h CTA for a specific postnatal age across all datasets."""
+        # L-D-L-D shading
+        ax.axvspan(0, 12, facecolor=self.LIGHT_PHASE_COLOR, zorder=0)
+        ax.axvspan(12, 24, facecolor=self.DARK_PHASE_COLOR, zorder=0)
+        ax.axvspan(24, 36, facecolor=self.LIGHT_PHASE_COLOR, zorder=0)
+        ax.axvspan(36, 48, facecolor=self.DARK_PHASE_COLOR, zorder=0)
+
+        x_hours = np.arange(2 * self.MINUTES_PER_DAY) / 60
+
+        for ds_idx, ds in enumerate(datasets):
+            color = self.DATASET_COLORS[ds_idx % len(self.DATASET_COLORS)]
+            label = self._get_dataset_label(ds)
+            age_data = all_age_data[ds_idx]
+
+            if age not in age_data:
+                continue
+
+            cta = self._smooth_data(age_data[age]['mean_cta'])
+            sem = self._smooth_data(age_data[age]['sem_cta'])
+
+            if np.all(np.isnan(cta)):
+                continue
+
+            cta_48h = np.concatenate([cta, cta])
+            sem_48h = np.concatenate([sem, sem])
+
+            ax.plot(x_hours, cta_48h, color=color, linewidth=1.2,
+                    label=label, alpha=0.9)
+            ax.fill_between(x_hours, cta_48h - sem_48h, cta_48h + sem_48h,
+                           color=color, alpha=self.SEM_ALPHA)
+
+        ax.set_xlim(0, 48)
+        ax.set_xticks([0, 12, 24, 36, 48])
+        ax.set_xticklabels(['ZT0', 'ZT12', 'ZT24', 'ZT36', 'ZT48'], fontsize=6)
+        ax.set_title(title, fontsize=8, fontweight='bold', color=self.TEXT_COLOR, pad=3)
+        ax.tick_params(colors=self.TEXT_COLOR, labelsize=6)
+
+        if show_legend:
+            legend = ax.legend(loc='upper right', fontsize=5, framealpha=0.8,
+                               facecolor=self.BG_COLOR, edgecolor=self.GRID_COLOR,
+                               labelcolor=self.TEXT_COLOR)
+            legend.set_draggable(True)
+
+        for spine in ax.spines.values():
+            spine.set_color(self.GRID_COLOR)
+
+    def _generate_age_trend_pages(self, datasets: List[Dict[str, Any]],
+                                   metric_name: str) -> List[Tuple[str, Figure]]:
+        """
+        Generate age trend comparison pages for one metric.
+
+        Same layout as actogram: 4 columns x 2 rows of overlaid CTAs per page,
+        one per postnatal age + grand average CTA. Bar chart page at end.
+        """
+        key_base = self._clean_metric_name(metric_name)
+        n_datasets = len(datasets)
+        pages = []
+
+        # Compute per-age data for all datasets
+        all_age_data = []
+        all_ages = set()
+        for ds in datasets:
+            age_data = self._compute_age_ctas_for_dataset(ds, key_base)
+            all_age_data.append(age_data)
+            all_ages.update(age_data.keys())
+
+        if not all_ages:
+            fig = Figure(figsize=(11, 8.5), dpi=150, facecolor=self.BG_COLOR)
+            ax = fig.add_axes([0.1, 0.1, 0.8, 0.8])
+            ax.set_facecolor(self.BG_COLOR)
+            ax.axis('off')
+            ax.text(0.5, 0.5, f"No age data available for {metric_name}",
+                    ha='center', va='center', fontsize=12, color=self.TEXT_COLOR,
+                    transform=ax.transAxes)
+            pages.append((f"Age Trend: {metric_name}", fig))
+            return pages
+
+        ages_sorted = sorted(all_ages)
+        panel_count = len(ages_sorted) + 1  # ages + grand average CTA
+
+        cols_per_page = 4
+        rows_per_page = 2
+        panels_per_page = cols_per_page * rows_per_page
+
+        # Generate CTA grid pages
+        panel_idx = 0
+        page_num = 0
+
+        while panel_idx < panel_count:
+            page_num += 1
+            panels_this_page = min(panels_per_page, panel_count - panel_idx)
+            n_rows = (panels_this_page + cols_per_page - 1) // cols_per_page
+
+            fig = Figure(figsize=(11, 4.5 * n_rows), dpi=150, facecolor=self.BG_COLOR)
+            fig.suptitle(f"Age Trend: {metric_name} (Page {page_num})",
+                         fontsize=14, fontweight='bold', color=self.TEXT_COLOR, y=0.98)
+
+            gs = GridSpec(n_rows, cols_per_page, figure=fig,
+                          hspace=0.35, wspace=0.25,
+                          left=0.06, right=0.94, top=0.92, bottom=0.06)
+
+            for slot in range(panels_this_page):
+                cur = panel_idx + slot
+                row = slot // cols_per_page
+                col = slot % cols_per_page
+
+                ax = fig.add_subplot(gs[row, col])
+                ax.set_facecolor(self.BG_COLOR)
+
+                if cur < len(ages_sorted):
+                    age = ages_sorted[cur]
+                    title = f'P{age}'
+                    self._draw_overlaid_age_cta(ax, all_age_data, datasets,
+                                                 age, title,
+                                                 show_legend=(cur == 0))
+                else:
+                    # Grand average CTA (last panel)
+                    self._draw_overlaid_48h_cta(
+                        ax, datasets,
+                        f'{key_base}_grand_cta', f'{key_base}_grand_sem',
+                        'Grand Average', show_legend=(panel_idx == 0 and slot == 0))
+
+            panel_idx += panels_this_page
+            pages.append((f"Age Trend: {metric_name} p{page_num}", fig))
+
+        # Bar chart page: per-age + grand average light/dark means
+        bar_fig = self._create_age_bar_page(
+            datasets, all_age_data, ages_sorted, key_base, metric_name)
+        pages.append((f"Age Bars: {metric_name}", bar_fig))
+
+        return pages
+
+    def _create_age_bar_page(self, datasets: List[Dict[str, Any]],
+                              all_age_data: List[Dict],
+                              ages_sorted: List[int],
+                              key_base: str, metric_name: str) -> Figure:
+        """
+        Create bar chart page for age trend mode.
+
+        Two bar charts (Dark / Light) showing per-age + grand average means
+        for each dataset, with ANOVA stats.
+        """
+        n_datasets = len(datasets)
+        n_ages = len(ages_sorted)
+
+        # Labels: P30, P31, ..., Grand Avg
+        group_labels = [f'P{a}' for a in ages_sorted] + ['Grand\nAvg']
+        n_groups = n_ages + 1
+
+        # Collect raw values per dataset per group
+        all_dark = [[] for _ in range(n_datasets)]
+        all_light = [[] for _ in range(n_datasets)]
+
+        for ds_idx in range(n_datasets):
+            age_data = all_age_data[ds_idx]
+            for age in ages_sorted:
+                if age in age_data:
+                    all_dark[ds_idx].append(np.array(age_data[age]['dark_values']))
+                    all_light[ds_idx].append(np.array(age_data[age]['light_values']))
+                else:
+                    all_dark[ds_idx].append(np.array([]))
+                    all_light[ds_idx].append(np.array([]))
+
+            # Grand average
+            ds = datasets[ds_idx]
+            dark_arr = ds.get(f'{key_base}_dark_means', np.array([]))
+            light_arr = ds.get(f'{key_base}_light_means', np.array([]))
+            all_dark[ds_idx].append(dark_arr[~np.isnan(dark_arr)] if len(dark_arr) > 0 else np.array([]))
+            all_light[ds_idx].append(light_arr[~np.isnan(light_arr)] if len(light_arr) > 0 else np.array([]))
+
+        fig = Figure(figsize=(max(11, n_groups * 0.8 + 2), 8.5), dpi=150,
+                     facecolor=self.BG_COLOR)
+        fig.suptitle(f"Age Means: {metric_name}",
+                     fontsize=14, fontweight='bold', color=self.TEXT_COLOR, y=0.97)
+
+        gs = GridSpec(2, 1, figure=fig, hspace=0.35,
+                      left=0.07, right=0.95, top=0.91, bottom=0.08)
+
+        error_color = '#000000' if self.light_mode else '#ffffff'
+        error_kw = {'elinewidth': 1.0, 'capthick': 1.0, 'ecolor': error_color}
+
+        for row_idx, (phase, phase_key, all_phase) in enumerate([
+            ('Dark Phase', 'dark', all_dark), ('Light Phase', 'light', all_light)
+        ]):
+            ax = fig.add_subplot(gs[row_idx])
+            ax.set_facecolor(self.BG_COLOR)
+
+            x_base = np.arange(n_groups)
+            total_width = 0.8
+            bar_width = total_width / n_datasets
+
+            # Dot color for individual data points
+            dot_color = '#000000' if self.light_mode else '#ffffff'
+
+            for ds_idx, ds in enumerate(datasets):
+                color = self.DATASET_COLORS[ds_idx % len(self.DATASET_COLORS)]
+                label = self._get_dataset_label(ds) if row_idx == 0 else None
+
+                means = []
+                sems = []
+                for g in range(n_groups):
+                    arr = all_phase[ds_idx][g]
+                    if len(arr) > 0:
+                        means.append(np.mean(arr))
+                        sems.append(np.std(arr) / np.sqrt(len(arr)) if len(arr) > 1 else 0)
+                    else:
+                        means.append(0)
+                        sems.append(0)
+
+                offset = (ds_idx - n_datasets / 2 + 0.5) * bar_width
+                ax.bar(x_base + offset, means, bar_width * 0.9,
+                       yerr=sems, capsize=2, color=color, alpha=0.8,
+                       label=label, error_kw=error_kw)
+
+                # Scatter individual data points
+                for g in range(n_groups):
+                    arr = all_phase[ds_idx][g]
+                    if len(arr) > 0:
+                        jitter = np.random.default_rng(ds_idx * 1000 + g).uniform(
+                            -bar_width * 0.25, bar_width * 0.25, size=len(arr))
+                        marker = self.DATASET_MARKERS[ds_idx % len(self.DATASET_MARKERS)]
+                        ax.scatter(np.full(len(arr), x_base[g] + offset) + jitter,
+                                  arr, color=dot_color, s=12, alpha=0.6,
+                                  zorder=5, edgecolors='none', marker=marker)
+
+            # Statistics per group — stagger brackets to avoid overlap
+            if self.show_statistics and n_datasets >= 2:
+                dataset_labels = [self._get_dataset_label(ds) for ds in datasets]
+                # Compute global max height across all groups for consistent bracket spacing
+                global_max = 0
+                for g in range(n_groups):
+                    for ds_idx in range(n_datasets):
+                        arr = all_phase[ds_idx][g]
+                        if len(arr) > 0:
+                            h = max(np.max(arr), np.mean(arr) + (np.std(arr) / np.sqrt(len(arr)) if len(arr) > 1 else 0))
+                            global_max = max(global_max, h)
+
+                bracket_spacing = global_max * 0.08 if global_max > 0 else 0.1
+
+                for g in range(n_groups):
+                    raw_groups = [all_phase[ds_idx][g] for ds_idx in range(n_datasets)]
+                    stats = self._compute_statistics(raw_groups)
+
+                    grp_label = group_labels[g].replace('\n', ' ')
+                    bracket_level = 0
+                    for (i, j), p_value in sorted(stats['pairwise'].items()):
+                        self.statistics_results.append({
+                            'metric': metric_name,
+                            'phase': phase_key.capitalize(),
+                            'comparison': f'{dataset_labels[i]} vs {dataset_labels[j]} ({grp_label})',
+                            'group1': dataset_labels[i],
+                            'group2': dataset_labels[j],
+                            'group1_mean': np.mean(raw_groups[i]) if len(raw_groups[i]) > 0 else np.nan,
+                            'group1_sem': np.std(raw_groups[i]) / np.sqrt(len(raw_groups[i])) if len(raw_groups[i]) > 1 else 0,
+                            'group2_mean': np.mean(raw_groups[j]) if len(raw_groups[j]) > 0 else np.nan,
+                            'group2_sem': np.std(raw_groups[j]) / np.sqrt(len(raw_groups[j])) if len(raw_groups[j]) > 1 else 0,
+                            'test': 't-test' if n_datasets == 2 else 't-test (Bonferroni)',
+                            'p_value': p_value,
+                            'significance': self._get_significance_symbol(p_value),
+                            'anova_p': stats.get('anova_p')
+                        })
+
+                        symbol = self._get_significance_symbol(p_value)
+                        if symbol and symbol != 'ns':
+                            offset_i = (i - n_datasets / 2 + 0.5) * bar_width
+                            offset_j = (j - n_datasets / 2 + 0.5) * bar_width
+                            local_max = max(
+                                (np.max(raw_groups[k]) if len(raw_groups[k]) > 0 else 0)
+                                for k in range(n_datasets)
+                            )
+                            y_pos = local_max * 1.05 + bracket_level * bracket_spacing
+                            self._add_significance_bracket(
+                                ax, x_base[g] + offset_i, x_base[g] + offset_j,
+                                y_pos, symbol)
+                            bracket_level += 1
+
+            # Vertical separator before grand average (brighter)
+            ax.axvline(x=n_ages - 0.5, color='#888888', linestyle='--',
+                       linewidth=1.2, alpha=0.9)
+
+            ax.set_title(phase, fontsize=10, fontweight='bold',
+                        color=self.TEXT_COLOR, pad=5)
+            ax.set_xticks(x_base)
+            ax.set_xticklabels(group_labels, fontsize=6, rotation=45, ha='right')
+            ax.tick_params(colors=self.TEXT_COLOR, labelsize=7)
+
+            if row_idx == 0:
+                legend = ax.legend(loc='upper right', fontsize=6, framealpha=0.8,
+                                   facecolor=self.BG_COLOR, edgecolor=self.GRID_COLOR,
+                                   labelcolor=self.TEXT_COLOR)
+                legend.set_draggable(True)
+
+            for spine in ax.spines.values():
+                spine.set_color(self.GRID_COLOR)
+
+        return fig
+
     def create_sleep_comparison_page(self, datasets: List[Dict[str, Any]]) -> Optional[Figure]:
         """
         Create sleep analysis comparison page for multiple datasets.
@@ -894,7 +1983,7 @@ class ComparisonFigureGenerator:
         if not datasets_with_sleep:
             return None
 
-        fig = Figure(figsize=(11, 10), facecolor=self.BG_COLOR)
+        fig = Figure(figsize=(11, 10), dpi=150, facecolor=self.BG_COLOR)
         fig.suptitle("Sleep Analysis Comparison",
                      fontsize=14, fontweight='bold', color=self.TEXT_COLOR, y=0.98)
 

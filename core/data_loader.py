@@ -82,7 +82,8 @@ class DataLoader:
         """Get set of non-metric columns needed for analysis."""
         return {
             'animal.id', 'genotype', 'light.cycle', 'start', 'sex',
-            'cage.name', 'cage.id', 'cage', 'Cage'
+            'cage.name', 'cage.id', 'cage', 'Cage',
+            'birth.date', 'strain', 'group.name', 'study.code'
         }
 
     def _is_metric_column(self, col_name: str) -> bool:
@@ -165,6 +166,36 @@ class DataLoader:
             metadata['cage_id'] = animal_df['cage'].iloc[0]
         else:
             metadata['cage_id'] = 'Unknown'
+
+        # Extract birth date and compute age at recording start
+        if 'birth.date' in animal_df.columns:
+            birth_raw = animal_df['birth.date'].iloc[0]
+            if pd.notna(birth_raw):
+                try:
+                    birth_dt = pd.to_datetime(birth_raw, utc=True)
+                    start_dt = pd.to_datetime(animal_df['start'].iloc[0], utc=True)
+                    age_days = (start_dt - birth_dt).days
+                    metadata['dob'] = birth_dt.strftime('%Y-%m-%d')
+                    metadata['age'] = f'P{age_days}'
+                    metadata['age_days_at_start'] = age_days
+                except Exception:
+                    pass
+
+        # Extract strain if available
+        if 'strain' in animal_df.columns:
+            strain_val = animal_df['strain'].iloc[0]
+            if pd.notna(strain_val):
+                metadata['strain'] = str(strain_val)
+
+        # Extract group name if available
+        if 'group.name' in animal_df.columns:
+            group_val = animal_df['group.name'].iloc[0]
+            if pd.notna(group_val):
+                metadata['group_name'] = str(group_val)
+        elif 'study.code' in animal_df.columns:
+            study_val = animal_df['study.code'].iloc[0]
+            if pd.notna(study_val):
+                metadata['group_name'] = str(study_val)
 
         return metadata
 

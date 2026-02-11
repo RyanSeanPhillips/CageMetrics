@@ -113,6 +113,14 @@ EXTENDED_FIELDS = {
         'filterable': False,
         'primary_filter': False,
     },
+    'group_name': {
+        'label': 'Group Name',
+        'editable': True,
+        'type': 'str',
+        'description': 'Study group name (e.g., 10XDS+WT)',
+        'filterable': True,
+        'primary_filter': False,
+    },
     'experiment_date': {
         'label': 'Experiment Date',
         'editable': True,
