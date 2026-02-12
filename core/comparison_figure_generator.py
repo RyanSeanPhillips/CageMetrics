@@ -57,7 +57,7 @@ class ComparisonFigureGenerator:
 
     def __init__(self, smoothing_window: int = 5, bar_grouping: str = 'dataset',
                  light_mode: bool = False, dataset_colors: List[str] = None,
-                 show_statistics: bool = True, visualization_mode: str = 'cta_bars'):
+                 show_statistics: bool = True):
         """
         Initialize the comparison figure generator.
 
@@ -67,13 +67,11 @@ class ComparisonFigureGenerator:
             light_mode: If True, use light background for figures
             dataset_colors: Optional list of colors for each dataset
             show_statistics: If True, add statistical annotations to bar charts
-            visualization_mode: 'cta_bars', 'actogram', or 'age_trends'
         """
         self.smoothing_window = smoothing_window
         self.bar_grouping = bar_grouping
         self.light_mode = light_mode
         self.show_statistics = show_statistics
-        self.visualization_mode = visualization_mode
 
         # Store all statistics results for export
         self.statistics_results = []
@@ -110,16 +108,27 @@ class ComparisonFigureGenerator:
 
         return smoothed
 
-    def generate_all_pages(self, datasets: List[Dict[str, Any]]) -> List[Tuple[str, Figure]]:
+    def generate_all_pages(self, datasets: List[Dict[str, Any]],
+                           progress_callback=None) -> List[Tuple[str, Figure]]:
         """
-        Generate all comparison figure pages.
+        Generate all comparison figure pages (all visualization modes combined).
+
+        Produces: Summary, Age Coverage (if age data), per-metric grand CTA +
+        actogram + age trend pages, bar charts, sleep analysis, statistics.
+
+        Page titles encode metric names so the display layer can group into tabs.
 
         Args:
             datasets: List of loaded consolidated NPZ data dicts
+            progress_callback: Optional callable(str) for progress updates
 
         Returns:
             List of (title, figure) tuples
         """
+        def _progress(msg):
+            if progress_callback:
+                progress_callback(msg)
+
         # Clear statistics from previous runs
         self.statistics_results = []
 
@@ -129,77 +138,125 @@ class ComparisonFigureGenerator:
             return pages
 
         # Page 1: Summary comparing all datasets
+        _progress("Creating summary...")
         fig_summary = self.create_summary_page(datasets)
         pages.append(("Comparison Summary", fig_summary))
 
         # Get common metrics across all datasets
         common_metrics = self._get_common_metrics(datasets)
+        n_metrics = len(common_metrics)
 
-        if self.visualization_mode == 'actogram':
-            # Actogram mode: overlaid day-by-day CTAs + bar charts per metric
-            for metric_name in common_metrics:
-                metric_pages = self._generate_actogram_pages(datasets, metric_name)
-                pages.extend(metric_pages)
+        # Age coverage overview (if age data exists)
+        has_age = self._any_dataset_has_age_data(datasets)
+        if has_age:
+            _progress("Creating age coverage overview...")
+            coverage_fig = self._create_age_coverage_comparison_page(datasets)
+            if coverage_fig is not None:
+                pages.append(("Age Coverage Overview", coverage_fig))
 
-            # Statistics summary if enabled
-            if self.show_statistics and len(datasets) >= 2 and self.statistics_results:
-                fig_stats = self.create_statistics_summary_page(datasets)
-                pages.append(("Statistical Analysis", fig_stats))
+        # Per-metric pages: Grand CTA + Actogram + Age Trends
+        for i, metric_name in enumerate(common_metrics):
+            _progress(f"Metric {i+1}/{n_metrics}: {metric_name} (CTA)...")
+            fig_cta = self._create_single_metric_cta_page(datasets, metric_name)
+            pages.append((f"CTA: {metric_name}", fig_cta))
 
-        elif self.visualization_mode == 'age_trends':
-            # Age trend mode: overlaid per-age CTAs + bar charts per metric
-            if self._any_dataset_has_age_data(datasets):
-                # Age coverage overview page
-                coverage_fig = self._create_age_coverage_comparison_page(datasets)
-                if coverage_fig is not None:
-                    pages.append(("Age Coverage Overview", coverage_fig))
+            _progress(f"Metric {i+1}/{n_metrics}: {metric_name} (actogram)...")
+            actogram_pages = self._generate_actogram_pages(datasets, metric_name)
+            pages.extend(actogram_pages)
 
-                for metric_name in common_metrics:
-                    metric_pages = self._generate_age_trend_pages(datasets, metric_name)
-                    pages.extend(metric_pages)
+            if has_age:
+                _progress(f"Metric {i+1}/{n_metrics}: {metric_name} (age trends)...")
+                age_pages = self._generate_age_trend_pages(datasets, metric_name)
+                pages.extend(age_pages)
 
-                # Statistics summary if enabled
-                if self.show_statistics and len(datasets) >= 2 and self.statistics_results:
-                    fig_stats = self.create_statistics_summary_page(datasets)
-                    pages.append(("Statistical Analysis", fig_stats))
+        # Dark/Light bar chart pages (all metrics, from CTA+Bars mode)
+        _progress("Creating bar charts...")
+        bars_per_page = 12
+        for page_idx in range(0, len(common_metrics), bars_per_page):
+            page_metrics = common_metrics[page_idx:page_idx + bars_per_page]
+            page_num = page_idx // bars_per_page + 1
+            total_bar_pages = (len(common_metrics) + bars_per_page - 1) // bars_per_page
+            fig_bars = self.create_bar_comparison_page(datasets, page_metrics, page_num, total_bar_pages)
+            if total_bar_pages > 1:
+                pages.append((f"Dark/Light Comparison {page_num}", fig_bars))
             else:
-                fig = self._create_no_age_data_page()
-                pages.append(("Age Trends", fig))
+                pages.append(("Dark/Light Comparison", fig_bars))
 
-        else:
-            # Default CTA + Bars mode
-            # Pages 2+: Overlay CTA comparison plots (6 metrics per page in 2x3 grid)
-            metrics_per_page = 6
-            for page_idx in range(0, len(common_metrics), metrics_per_page):
-                page_metrics = common_metrics[page_idx:page_idx + metrics_per_page]
-                page_num = page_idx // metrics_per_page + 1
-                fig_cta = self.create_cta_comparison_page(datasets, page_metrics, page_num)
-                pages.append((f"CTA Comparison {page_num}", fig_cta))
+        # Sleep analysis comparison page
+        _progress("Creating sleep analysis...")
+        fig_sleep = self.create_sleep_comparison_page(datasets)
+        if fig_sleep is not None:
+            pages.append(("Sleep Analysis Comparison", fig_sleep))
 
-            # Final page(s): Bar chart comparisons (show ALL metrics)
-            # Use multiple pages if needed, 12 metrics per page
-            bars_per_page = 12
-            for page_idx in range(0, len(common_metrics), bars_per_page):
-                page_metrics = common_metrics[page_idx:page_idx + bars_per_page]
-                page_num = page_idx // bars_per_page + 1
-                total_bar_pages = (len(common_metrics) + bars_per_page - 1) // bars_per_page
-                fig_bars = self.create_bar_comparison_page(datasets, page_metrics, page_num, total_bar_pages)
-                if total_bar_pages > 1:
-                    pages.append((f"Dark/Light Comparison {page_num}", fig_bars))
-                else:
-                    pages.append(("Dark/Light Comparison", fig_bars))
+        # Statistics summary page
+        if self.show_statistics and len(datasets) >= 2 and self.statistics_results:
+            _progress("Creating statistics summary...")
+            fig_stats = self.create_statistics_summary_page(datasets)
+            pages.append(("Statistical Analysis", fig_stats))
 
-            # Statistics summary page (if statistics are enabled and we have results)
-            if self.show_statistics and len(datasets) >= 2:
-                fig_stats = self.create_statistics_summary_page(datasets)
-                pages.append(("Statistical Analysis", fig_stats))
-
-            # Sleep analysis comparison page (if any datasets have sleep data)
-            fig_sleep = self.create_sleep_comparison_page(datasets)
-            if fig_sleep is not None:
-                pages.append(("Sleep Analysis Comparison", fig_sleep))
-
+        _progress(f"Generated {len(pages)} figures")
         return pages
+
+    def _create_single_metric_cta_page(self, datasets: List[Dict[str, Any]],
+                                         metric_name: str) -> Figure:
+        """Create a large single-metric CTA comparison page (48hr double-plot L-D-L-D)."""
+        fig = Figure(figsize=(11, 5.5), dpi=150, facecolor=self.BG_COLOR)
+
+        fig.suptitle(f"CTA Comparison: {metric_name}",
+                     fontsize=14, fontweight='bold', color=self.TEXT_COLOR, y=0.97)
+
+        ax = fig.add_axes([0.07, 0.12, 0.88, 0.78])
+        ax.set_facecolor(self.BG_COLOR)
+
+        # 48-hour x-axis (L-D-L-D double-plot)
+        x_minutes_48h = np.arange(2880)
+        x_hours_48h = x_minutes_48h / 60
+
+        # Draw dark/light phase background (48hr: L-D-L-D)
+        ax.axvspan(0, 12, facecolor=self.LIGHT_PHASE_COLOR, zorder=0)
+        ax.axvspan(12, 24, facecolor=self.DARK_PHASE_COLOR, zorder=0)
+        ax.axvspan(24, 36, facecolor=self.LIGHT_PHASE_COLOR, zorder=0)
+        ax.axvspan(36, 48, facecolor=self.DARK_PHASE_COLOR, zorder=0)
+
+        key_base = self._clean_metric_name(metric_name)
+
+        for ds_idx, ds in enumerate(datasets):
+            color = self.DATASET_COLORS[ds_idx % len(self.DATASET_COLORS)]
+            label = self._get_dataset_label(ds)
+
+            grand_cta = ds.get(f'{key_base}_grand_cta')
+            grand_sem = ds.get(f'{key_base}_grand_sem')
+
+            if grand_cta is not None and len(grand_cta) == self.MINUTES_PER_DAY:
+                smoothed_cta = self._smooth_data(grand_cta)
+                # Double to 48 hours (repeat full 24h cycle)
+                cta_48h = np.concatenate([smoothed_cta, smoothed_cta])
+                ax.plot(x_hours_48h, cta_48h, color=color, linewidth=1.5,
+                       label=label, alpha=0.9)
+
+                if grand_sem is not None and len(grand_sem) == self.MINUTES_PER_DAY:
+                    smoothed_sem = self._smooth_data(grand_sem)
+                    sem_48h = np.concatenate([smoothed_sem, smoothed_sem])
+                    ax.fill_between(x_hours_48h,
+                                   cta_48h - sem_48h,
+                                   cta_48h + sem_48h,
+                                   color=color, alpha=self.SEM_ALPHA)
+
+        ax.set_xlim(0, 48)
+        ax.set_xticks([0, 6, 12, 18, 24, 30, 36, 42, 48])
+        ax.set_xticklabels(['ZT0', 'ZT6', 'ZT12', 'ZT18', 'ZT24',
+                            'ZT30', 'ZT36', 'ZT42', 'ZT48'],
+                           fontsize=9, color=self.TEXT_COLOR)
+        ax.set_ylabel(metric_name, fontsize=10, color=self.TEXT_COLOR)
+        ax.tick_params(colors=self.TEXT_COLOR, labelsize=9)
+        for spine in ax.spines.values():
+            spine.set_color(self.GRID_COLOR)
+
+        legend = ax.legend(loc='upper right', fontsize=9, framealpha=0.8,
+                           facecolor=self.BG_COLOR, edgecolor=self.GRID_COLOR,
+                           labelcolor=self.TEXT_COLOR)
+
+        return fig
 
     def _get_common_metrics(self, datasets: List[Dict[str, Any]]) -> List[str]:
         """Get list of metrics common to all datasets."""
@@ -627,12 +684,15 @@ class ComparisonFigureGenerator:
 
         return fig
 
-    def _compute_statistics(self, data_groups: List[np.ndarray]) -> dict:
+    def _compute_statistics(self, data_groups: List[np.ndarray],
+                             apply_correction: bool = True) -> dict:
         """
         Compute statistical comparisons between groups.
 
         Args:
             data_groups: List of arrays, one per group (each array contains values for all animals in that group)
+            apply_correction: If True, apply Bonferroni correction for 3+ groups.
+                              If False, return raw (uncorrected) p-values.
 
         Returns:
             Dictionary with p-values for pairwise comparisons
@@ -678,16 +738,58 @@ class ComparisonFigureGenerator:
                 # One-way ANOVA
                 _, results['anova_p'] = stats.f_oneway(*clean_groups)
 
-                # Pairwise t-tests with Bonferroni correction
+                # Pairwise t-tests
                 n_comparisons = len(clean_groups) * (len(clean_groups) - 1) // 2
                 for idx1, (i, g1) in enumerate(zip(group_indices, clean_groups)):
                     for idx2, (j, g2) in enumerate(zip(group_indices[idx1+1:], clean_groups[idx1+1:])):
                         j = group_indices[idx1 + 1 + idx2]
                         _, p_value = stats.ttest_ind(g1, g2, equal_var=False)
-                        # Apply Bonferroni correction
-                        results['pairwise'][(i, j)] = min(p_value * n_comparisons, 1.0)
+                        if apply_correction:
+                            # Apply Bonferroni correction
+                            results['pairwise'][(i, j)] = min(p_value * n_comparisons, 1.0)
+                        else:
+                            results['pairwise'][(i, j)] = p_value
 
         return results
+
+    @staticmethod
+    def _apply_fdr_correction(p_values: List[float]) -> List[float]:
+        """
+        Apply Benjamini-Hochberg FDR correction to a list of p-values.
+
+        Args:
+            p_values: List of raw (uncorrected) p-values
+
+        Returns:
+            List of FDR-adjusted q-values in the same order as input
+        """
+        m = len(p_values)
+        if m == 0:
+            return []
+        if m == 1:
+            return list(p_values)
+
+        # Sort by p-value, keeping track of original indices
+        indexed = sorted(enumerate(p_values), key=lambda x: x[1])
+
+        # Compute adjusted p-values: q[i] = p[i] * m / rank
+        adjusted = [0.0] * m
+        for rank_0, (orig_idx, pval) in enumerate(indexed):
+            rank = rank_0 + 1  # 1-indexed rank
+            adjusted[orig_idx] = pval * m / rank
+
+        # Enforce monotonicity from the largest p-value down
+        # (each adjusted value must be <= the next larger one)
+        sorted_orig_indices = [orig_idx for orig_idx, _ in indexed]
+        for k in range(m - 2, -1, -1):
+            idx_k = sorted_orig_indices[k]
+            idx_k1 = sorted_orig_indices[k + 1]
+            adjusted[idx_k] = min(adjusted[idx_k], adjusted[idx_k1])
+
+        # Cap at 1.0
+        adjusted = [min(q, 1.0) for q in adjusted]
+
+        return adjusted
 
     def _get_significance_symbol(self, p_value: float) -> str:
         """Convert p-value to significance symbol."""
@@ -823,22 +925,30 @@ class ComparisonFigureGenerator:
 
         # Method description
         n_datasets = len(datasets)
+        has_fdr = any(r.get('q_value') is not None for r in self.statistics_results)
         if n_datasets == 2:
             method_text = "Method: Welch's t-test (unequal variance)"
         else:
             method_text = "Method: One-way ANOVA + pairwise t-tests with Bonferroni correction"
+        if has_fdr:
+            method_text += "\nMulti-day/age bar charts: Benjamini-Hochberg FDR correction across all days/ages x phases"
 
         ax.text(0.0, y_pos, method_text, fontsize=9, color=self.TEXT_COLOR,
                fontweight='bold', transform=ax.transAxes)
-        y_pos -= line_height * 1.5
+        y_pos -= line_height * (1.5 if not has_fdr else 2.5)
 
-        ax.text(0.0, y_pos, "Significance: * p<0.05, ** p<0.01, *** p<0.001, ns = not significant",
+        sig_label = "q" if has_fdr else "p"
+        ax.text(0.0, y_pos, f"Significance: * {sig_label}<0.05, ** {sig_label}<0.01, *** {sig_label}<0.001, ns = not significant",
                fontsize=8, color=self.TEXT_COLOR, transform=ax.transAxes)
         y_pos -= line_height * 2
 
         # Table headers
-        headers = ['Metric', 'Phase', 'Comparison', 'p-value', 'Sig.']
-        col_positions = [0.0, 0.25, 0.35, 0.68, 0.82]
+        if has_fdr:
+            headers = ['Metric', 'Phase', 'Comparison', 'p-value', 'q-value', 'Sig.']
+            col_positions = [0.0, 0.22, 0.32, 0.58, 0.72, 0.86]
+        else:
+            headers = ['Metric', 'Phase', 'Comparison', 'p-value', 'Sig.']
+            col_positions = [0.0, 0.25, 0.35, 0.68, 0.82]
 
         for i, (header, x) in enumerate(zip(headers, col_positions)):
             ax.text(x, y_pos, header, fontsize=8, fontweight='bold',
@@ -874,19 +984,37 @@ class ComparisonFigureGenerator:
                 else:
                     p_str = 'N/A'
 
+                # Format q-value if present
+                q_val = result.get('q_value')
+                if q_val is not None and not np.isnan(q_val):
+                    q_str = f"{q_val:.4f}" if q_val >= 0.0001 else f"{q_val:.2e}"
+                else:
+                    q_str = None
+
                 # Truncate comparison for display
                 comparison = result['comparison']
-                if len(comparison) > 28:
-                    comparison = comparison[:25] + '...'
+                max_comp_len = 22 if has_fdr else 28
+                if len(comparison) > max_comp_len:
+                    comparison = comparison[:max_comp_len - 3] + '...'
 
                 # Row data
-                row_data = [
-                    display_metric,
-                    result['phase'],
-                    comparison,
-                    p_str,
-                    result['significance']
-                ]
+                if has_fdr:
+                    row_data = [
+                        display_metric,
+                        result['phase'],
+                        comparison,
+                        p_str,
+                        q_str if q_str else p_str,
+                        result['significance']
+                    ]
+                else:
+                    row_data = [
+                        display_metric,
+                        result['phase'],
+                        comparison,
+                        p_str,
+                        result['significance']
+                    ]
 
                 # Color-code significance
                 sig = result['significance']
@@ -1211,16 +1339,14 @@ class ComparisonFigureGenerator:
         Create bar chart page for actogram mode.
 
         Two bar charts (Dark / Light) showing per-day + grand average means
-        for each dataset, with ANOVA stats.
+        for each dataset, with FDR-corrected statistics across all days and phases.
         """
         n_datasets = len(datasets)
 
         # Compute per-day light/dark means and raw values for each dataset
-        # day_labels: D1, D2, ..., Dn, Grand Avg
         day_labels = [f'D{d+1}' for d in range(max_days)] + ['Grand\nAvg']
         n_groups = max_days + 1  # days + grand avg
 
-        # For each dataset, for each day: collect animal-level light/dark means
         # all_dark[ds_idx][group_idx] = array of per-animal means
         all_dark = [[] for _ in range(n_datasets)]
         all_light = [[] for _ in range(n_datasets)]
@@ -1262,17 +1388,21 @@ class ComparisonFigureGenerator:
         error_color = '#000000' if self.light_mode else '#ffffff'
         error_kw = {'elinewidth': 1.0, 'capthick': 1.0, 'ecolor': error_color}
 
-        for row_idx, (phase, phase_key, all_phase) in enumerate([
-            ('Dark Phase', 'dark', all_dark), ('Light Phase', 'light', all_light)
-        ]):
+        phase_info = [
+            ('Dark Phase', 'dark', all_dark),
+            ('Light Phase', 'light', all_light)
+        ]
+        axes = []
+        x_base = np.arange(n_groups)
+        total_width = 0.8
+        bar_width = total_width / n_datasets
+
+        # --- Pass 1: Draw bars and scatter points ---
+        for row_idx, (phase, phase_key, all_phase) in enumerate(phase_info):
             ax = fig.add_subplot(gs[row_idx])
             ax.set_facecolor(self.BG_COLOR)
+            axes.append(ax)
 
-            x_base = np.arange(n_groups)
-            total_width = 0.8
-            bar_width = total_width / n_datasets
-
-            # Dot color for individual data points
             dot_color = '#000000' if self.light_mode else '#ffffff'
 
             for ds_idx, ds in enumerate(datasets):
@@ -1295,7 +1425,6 @@ class ComparisonFigureGenerator:
                        yerr=sems, capsize=2, color=color, alpha=0.8,
                        label=label, error_kw=error_kw)
 
-                # Scatter individual data points
                 for g in range(n_groups):
                     arr = all_phase[ds_idx][g]
                     if len(arr) > 0:
@@ -1306,61 +1435,6 @@ class ComparisonFigureGenerator:
                                   arr, color=dot_color, s=12, alpha=0.6,
                                   zorder=5, edgecolors='none', marker=marker)
 
-            # Statistics per group — stagger brackets to avoid overlap
-            if self.show_statistics and n_datasets >= 2:
-                dataset_labels = [self._get_dataset_label(ds) for ds in datasets]
-                # Compute global max height across all groups for consistent bracket spacing
-                global_max = 0
-                for g in range(n_groups):
-                    for ds_idx in range(n_datasets):
-                        arr = all_phase[ds_idx][g]
-                        if len(arr) > 0:
-                            h = np.mean(arr) + (np.std(arr) / np.sqrt(len(arr)) if len(arr) > 1 else 0)
-                            # Also consider max data point
-                            h = max(h, np.max(arr))
-                            global_max = max(global_max, h)
-
-                bracket_spacing = global_max * 0.08 if global_max > 0 else 0.1
-
-                for g in range(n_groups):
-                    raw_groups = [all_phase[ds_idx][g] for ds_idx in range(n_datasets)]
-                    stats = self._compute_statistics(raw_groups)
-
-                    grp_label = day_labels[g].replace('\n', ' ')
-                    bracket_level = 0
-                    for (i, j), p_value in sorted(stats['pairwise'].items()):
-                        self.statistics_results.append({
-                            'metric': metric_name,
-                            'phase': phase_key.capitalize(),
-                            'comparison': f'{dataset_labels[i]} vs {dataset_labels[j]} ({grp_label})',
-                            'group1': dataset_labels[i],
-                            'group2': dataset_labels[j],
-                            'group1_mean': np.mean(raw_groups[i]) if len(raw_groups[i]) > 0 else np.nan,
-                            'group1_sem': np.std(raw_groups[i]) / np.sqrt(len(raw_groups[i])) if len(raw_groups[i]) > 1 else 0,
-                            'group2_mean': np.mean(raw_groups[j]) if len(raw_groups[j]) > 0 else np.nan,
-                            'group2_sem': np.std(raw_groups[j]) / np.sqrt(len(raw_groups[j])) if len(raw_groups[j]) > 1 else 0,
-                            'test': 't-test' if n_datasets == 2 else 't-test (Bonferroni)',
-                            'p_value': p_value,
-                            'significance': self._get_significance_symbol(p_value),
-                            'anova_p': stats.get('anova_p')
-                        })
-
-                        symbol = self._get_significance_symbol(p_value)
-                        if symbol and symbol != 'ns':
-                            offset_i = (i - n_datasets / 2 + 0.5) * bar_width
-                            offset_j = (j - n_datasets / 2 + 0.5) * bar_width
-                            # Local max for this group position
-                            local_max = max(
-                                (np.max(raw_groups[k]) if len(raw_groups[k]) > 0 else 0)
-                                for k in range(n_datasets)
-                            )
-                            y_pos = local_max * 1.05 + bracket_level * bracket_spacing
-                            self._add_significance_bracket(
-                                ax, x_base[g] + offset_i, x_base[g] + offset_j,
-                                y_pos, symbol)
-                            bracket_level += 1
-
-            # Add vertical line before grand average (brighter)
             ax.axvline(x=max_days - 0.5, color='#888888', linestyle='--',
                        linewidth=1.2, alpha=0.9)
 
@@ -1378,6 +1452,98 @@ class ComparisonFigureGenerator:
 
             for spine in ax.spines.values():
                 spine.set_color(self.GRID_COLOR)
+
+        # --- Pass 2: FDR-corrected statistics across all days × phases ---
+        if self.show_statistics and n_datasets >= 2:
+            dataset_labels = [self._get_dataset_label(ds) for ds in datasets]
+
+            # Collect raw (uncorrected) p-values from all groups × both phases
+            raw_entries = []  # list of dicts with raw p-value + metadata for each test
+            for row_idx, (phase, phase_key, all_phase) in enumerate(phase_info):
+                for g in range(n_groups):
+                    raw_groups = [all_phase[ds_idx][g] for ds_idx in range(n_datasets)]
+                    stats = self._compute_statistics(raw_groups, apply_correction=False)
+                    grp_label = day_labels[g].replace('\n', ' ')
+
+                    for (i, j), p_value in sorted(stats['pairwise'].items()):
+                        raw_entries.append({
+                            'row_idx': row_idx,
+                            'phase_key': phase_key,
+                            'g': g,
+                            'grp_label': grp_label,
+                            'i': i, 'j': j,
+                            'raw_p': p_value,
+                            'raw_groups': raw_groups,
+                            'anova_p': stats.get('anova_p'),
+                        })
+
+            # Apply FDR correction to the full set of p-values
+            if raw_entries:
+                raw_p_values = [e['raw_p'] for e in raw_entries]
+                corrected_q = self._apply_fdr_correction(raw_p_values)
+
+                # Compute global max for bracket spacing per phase
+                phase_global_max = {}
+                for row_idx, (phase, phase_key, all_phase) in enumerate(phase_info):
+                    gmax = 0
+                    for g in range(n_groups):
+                        for ds_idx in range(n_datasets):
+                            arr = all_phase[ds_idx][g]
+                            if len(arr) > 0:
+                                h = max(np.max(arr),
+                                        np.mean(arr) + (np.std(arr) / np.sqrt(len(arr)) if len(arr) > 1 else 0))
+                                gmax = max(gmax, h)
+                    phase_global_max[row_idx] = gmax
+
+                # Track bracket levels per (phase, group) for staggering
+                bracket_levels = {}
+
+                for idx, entry in enumerate(raw_entries):
+                    q_value = corrected_q[idx]
+                    ri = entry['row_idx']
+                    g = entry['g']
+                    i, j = entry['i'], entry['j']
+                    raw_groups = entry['raw_groups']
+
+                    # Store statistics result with FDR-corrected q-value
+                    self.statistics_results.append({
+                        'metric': metric_name,
+                        'phase': entry['phase_key'].capitalize(),
+                        'comparison': f'{dataset_labels[i]} vs {dataset_labels[j]} ({entry["grp_label"]})',
+                        'group1': dataset_labels[i],
+                        'group2': dataset_labels[j],
+                        'group1_mean': np.mean(raw_groups[i]) if len(raw_groups[i]) > 0 else np.nan,
+                        'group1_sem': np.std(raw_groups[i]) / np.sqrt(len(raw_groups[i])) if len(raw_groups[i]) > 1 else 0,
+                        'group2_mean': np.mean(raw_groups[j]) if len(raw_groups[j]) > 0 else np.nan,
+                        'group2_sem': np.std(raw_groups[j]) / np.sqrt(len(raw_groups[j])) if len(raw_groups[j]) > 1 else 0,
+                        'test': 't-test (FDR)' if n_datasets == 2 else 'ANOVA + t-test (FDR)',
+                        'p_value': entry['raw_p'],
+                        'q_value': q_value,
+                        'significance': self._get_significance_symbol(q_value),
+                        'anova_p': entry['anova_p']
+                    })
+
+                    # Draw bracket using corrected q-value
+                    symbol = self._get_significance_symbol(q_value)
+                    if symbol and symbol != 'ns':
+                        ax = axes[ri]
+                        gmax = phase_global_max[ri]
+                        bracket_spacing = gmax * 0.08 if gmax > 0 else 0.1
+
+                        level_key = (ri, g)
+                        bracket_level = bracket_levels.get(level_key, 0)
+
+                        offset_i = (i - n_datasets / 2 + 0.5) * bar_width
+                        offset_j = (j - n_datasets / 2 + 0.5) * bar_width
+                        local_max = max(
+                            (np.max(raw_groups[k]) if len(raw_groups[k]) > 0 else 0)
+                            for k in range(n_datasets)
+                        )
+                        y_pos = local_max * 1.05 + bracket_level * bracket_spacing
+                        self._add_significance_bracket(
+                            ax, x_base[g] + offset_i, x_base[g] + offset_j,
+                            y_pos, symbol)
+                        bracket_levels[level_key] = bracket_level + 1
 
         return fig
 
@@ -1808,16 +1974,14 @@ class ComparisonFigureGenerator:
         Create bar chart page for age trend mode.
 
         Two bar charts (Dark / Light) showing per-age + grand average means
-        for each dataset, with ANOVA stats.
+        for each dataset, with FDR-corrected statistics across all ages and phases.
         """
         n_datasets = len(datasets)
         n_ages = len(ages_sorted)
 
-        # Labels: P30, P31, ..., Grand Avg
         group_labels = [f'P{a}' for a in ages_sorted] + ['Grand\nAvg']
         n_groups = n_ages + 1
 
-        # Collect raw values per dataset per group
         all_dark = [[] for _ in range(n_datasets)]
         all_light = [[] for _ in range(n_datasets)]
 
@@ -1831,7 +1995,6 @@ class ComparisonFigureGenerator:
                     all_dark[ds_idx].append(np.array([]))
                     all_light[ds_idx].append(np.array([]))
 
-            # Grand average
             ds = datasets[ds_idx]
             dark_arr = ds.get(f'{key_base}_dark_means', np.array([]))
             light_arr = ds.get(f'{key_base}_light_means', np.array([]))
@@ -1849,17 +2012,21 @@ class ComparisonFigureGenerator:
         error_color = '#000000' if self.light_mode else '#ffffff'
         error_kw = {'elinewidth': 1.0, 'capthick': 1.0, 'ecolor': error_color}
 
-        for row_idx, (phase, phase_key, all_phase) in enumerate([
-            ('Dark Phase', 'dark', all_dark), ('Light Phase', 'light', all_light)
-        ]):
+        phase_info = [
+            ('Dark Phase', 'dark', all_dark),
+            ('Light Phase', 'light', all_light)
+        ]
+        axes = []
+        x_base = np.arange(n_groups)
+        total_width = 0.8
+        bar_width = total_width / n_datasets
+
+        # --- Pass 1: Draw bars and scatter points ---
+        for row_idx, (phase, phase_key, all_phase) in enumerate(phase_info):
             ax = fig.add_subplot(gs[row_idx])
             ax.set_facecolor(self.BG_COLOR)
+            axes.append(ax)
 
-            x_base = np.arange(n_groups)
-            total_width = 0.8
-            bar_width = total_width / n_datasets
-
-            # Dot color for individual data points
             dot_color = '#000000' if self.light_mode else '#ffffff'
 
             for ds_idx, ds in enumerate(datasets):
@@ -1882,7 +2049,6 @@ class ComparisonFigureGenerator:
                        yerr=sems, capsize=2, color=color, alpha=0.8,
                        label=label, error_kw=error_kw)
 
-                # Scatter individual data points
                 for g in range(n_groups):
                     arr = all_phase[ds_idx][g]
                     if len(arr) > 0:
@@ -1893,58 +2059,7 @@ class ComparisonFigureGenerator:
                                   arr, color=dot_color, s=12, alpha=0.6,
                                   zorder=5, edgecolors='none', marker=marker)
 
-            # Statistics per group — stagger brackets to avoid overlap
-            if self.show_statistics and n_datasets >= 2:
-                dataset_labels = [self._get_dataset_label(ds) for ds in datasets]
-                # Compute global max height across all groups for consistent bracket spacing
-                global_max = 0
-                for g in range(n_groups):
-                    for ds_idx in range(n_datasets):
-                        arr = all_phase[ds_idx][g]
-                        if len(arr) > 0:
-                            h = max(np.max(arr), np.mean(arr) + (np.std(arr) / np.sqrt(len(arr)) if len(arr) > 1 else 0))
-                            global_max = max(global_max, h)
-
-                bracket_spacing = global_max * 0.08 if global_max > 0 else 0.1
-
-                for g in range(n_groups):
-                    raw_groups = [all_phase[ds_idx][g] for ds_idx in range(n_datasets)]
-                    stats = self._compute_statistics(raw_groups)
-
-                    grp_label = group_labels[g].replace('\n', ' ')
-                    bracket_level = 0
-                    for (i, j), p_value in sorted(stats['pairwise'].items()):
-                        self.statistics_results.append({
-                            'metric': metric_name,
-                            'phase': phase_key.capitalize(),
-                            'comparison': f'{dataset_labels[i]} vs {dataset_labels[j]} ({grp_label})',
-                            'group1': dataset_labels[i],
-                            'group2': dataset_labels[j],
-                            'group1_mean': np.mean(raw_groups[i]) if len(raw_groups[i]) > 0 else np.nan,
-                            'group1_sem': np.std(raw_groups[i]) / np.sqrt(len(raw_groups[i])) if len(raw_groups[i]) > 1 else 0,
-                            'group2_mean': np.mean(raw_groups[j]) if len(raw_groups[j]) > 0 else np.nan,
-                            'group2_sem': np.std(raw_groups[j]) / np.sqrt(len(raw_groups[j])) if len(raw_groups[j]) > 1 else 0,
-                            'test': 't-test' if n_datasets == 2 else 't-test (Bonferroni)',
-                            'p_value': p_value,
-                            'significance': self._get_significance_symbol(p_value),
-                            'anova_p': stats.get('anova_p')
-                        })
-
-                        symbol = self._get_significance_symbol(p_value)
-                        if symbol and symbol != 'ns':
-                            offset_i = (i - n_datasets / 2 + 0.5) * bar_width
-                            offset_j = (j - n_datasets / 2 + 0.5) * bar_width
-                            local_max = max(
-                                (np.max(raw_groups[k]) if len(raw_groups[k]) > 0 else 0)
-                                for k in range(n_datasets)
-                            )
-                            y_pos = local_max * 1.05 + bracket_level * bracket_spacing
-                            self._add_significance_bracket(
-                                ax, x_base[g] + offset_i, x_base[g] + offset_j,
-                                y_pos, symbol)
-                            bracket_level += 1
-
-            # Vertical separator before grand average (brighter)
+            # Vertical separator before grand average
             ax.axvline(x=n_ages - 0.5, color='#888888', linestyle='--',
                        linewidth=1.2, alpha=0.9)
 
@@ -1962,6 +2077,95 @@ class ComparisonFigureGenerator:
 
             for spine in ax.spines.values():
                 spine.set_color(self.GRID_COLOR)
+
+        # --- Pass 2: FDR-corrected statistics across all ages × phases ---
+        if self.show_statistics and n_datasets >= 2:
+            dataset_labels = [self._get_dataset_label(ds) for ds in datasets]
+
+            # Collect raw (uncorrected) p-values from all groups × both phases
+            raw_entries = []
+            for row_idx, (phase, phase_key, all_phase) in enumerate(phase_info):
+                for g in range(n_groups):
+                    raw_groups = [all_phase[ds_idx][g] for ds_idx in range(n_datasets)]
+                    stats = self._compute_statistics(raw_groups, apply_correction=False)
+                    grp_label = group_labels[g].replace('\n', ' ')
+
+                    for (i, j), p_value in sorted(stats['pairwise'].items()):
+                        raw_entries.append({
+                            'row_idx': row_idx,
+                            'phase_key': phase_key,
+                            'g': g,
+                            'grp_label': grp_label,
+                            'i': i, 'j': j,
+                            'raw_p': p_value,
+                            'raw_groups': raw_groups,
+                            'anova_p': stats.get('anova_p'),
+                        })
+
+            # Apply FDR correction to the full set of p-values
+            if raw_entries:
+                raw_p_values = [e['raw_p'] for e in raw_entries]
+                corrected_q = self._apply_fdr_correction(raw_p_values)
+
+                # Compute global max for bracket spacing per phase
+                phase_global_max = {}
+                for row_idx, (phase, phase_key, all_phase) in enumerate(phase_info):
+                    gmax = 0
+                    for g in range(n_groups):
+                        for ds_idx in range(n_datasets):
+                            arr = all_phase[ds_idx][g]
+                            if len(arr) > 0:
+                                h = max(np.max(arr),
+                                        np.mean(arr) + (np.std(arr) / np.sqrt(len(arr)) if len(arr) > 1 else 0))
+                                gmax = max(gmax, h)
+                    phase_global_max[row_idx] = gmax
+
+                bracket_levels = {}
+
+                for idx, entry in enumerate(raw_entries):
+                    q_value = corrected_q[idx]
+                    ri = entry['row_idx']
+                    g = entry['g']
+                    i, j = entry['i'], entry['j']
+                    raw_groups = entry['raw_groups']
+
+                    self.statistics_results.append({
+                        'metric': metric_name,
+                        'phase': entry['phase_key'].capitalize(),
+                        'comparison': f'{dataset_labels[i]} vs {dataset_labels[j]} ({entry["grp_label"]})',
+                        'group1': dataset_labels[i],
+                        'group2': dataset_labels[j],
+                        'group1_mean': np.mean(raw_groups[i]) if len(raw_groups[i]) > 0 else np.nan,
+                        'group1_sem': np.std(raw_groups[i]) / np.sqrt(len(raw_groups[i])) if len(raw_groups[i]) > 1 else 0,
+                        'group2_mean': np.mean(raw_groups[j]) if len(raw_groups[j]) > 0 else np.nan,
+                        'group2_sem': np.std(raw_groups[j]) / np.sqrt(len(raw_groups[j])) if len(raw_groups[j]) > 1 else 0,
+                        'test': 't-test (FDR)' if n_datasets == 2 else 'ANOVA + t-test (FDR)',
+                        'p_value': entry['raw_p'],
+                        'q_value': q_value,
+                        'significance': self._get_significance_symbol(q_value),
+                        'anova_p': entry['anova_p']
+                    })
+
+                    symbol = self._get_significance_symbol(q_value)
+                    if symbol and symbol != 'ns':
+                        ax = axes[ri]
+                        gmax = phase_global_max[ri]
+                        bracket_spacing = gmax * 0.08 if gmax > 0 else 0.1
+
+                        level_key = (ri, g)
+                        bracket_level = bracket_levels.get(level_key, 0)
+
+                        offset_i = (i - n_datasets / 2 + 0.5) * bar_width
+                        offset_j = (j - n_datasets / 2 + 0.5) * bar_width
+                        local_max = max(
+                            (np.max(raw_groups[k]) if len(raw_groups[k]) > 0 else 0)
+                            for k in range(n_datasets)
+                        )
+                        y_pos = local_max * 1.05 + bracket_level * bracket_spacing
+                        self._add_significance_bracket(
+                            ax, x_base[g] + offset_i, x_base[g] + offset_j,
+                            y_pos, symbol)
+                        bracket_levels[level_key] = bracket_level + 1
 
         return fig
 

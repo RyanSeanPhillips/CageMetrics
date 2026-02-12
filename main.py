@@ -76,8 +76,11 @@ class WheelScrollArea(QScrollArea):
             self._install_event_filter_recursive(self._content_widget)
 
     def eventFilter(self, obj, event):
-        """Intercept wheel events and handle scrolling."""
+        """Intercept wheel events and handle scrolling. Let Ctrl+wheel through for zoom."""
         if event.type() == QEvent.Type.Wheel:
+            # Let Ctrl+wheel pass through to SvgFigureWidget for zoom
+            if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+                return False
             # Scroll the viewport
             delta = event.angleDelta().y()
             scroll_bar = self.verticalScrollBar()
@@ -210,40 +213,58 @@ class SvgFigureWidget(QLabel):
     Uses QLabel with QPixmap for much better performance than SVG rendering,
     especially with complex figures. The original Figure is kept for high-quality
     PDF/vector export via save_figure().
+
+    Zoom: Ctrl+mousewheel scales 0.25x-3.0x across ALL figures in the same tab.
+    Double-click resets all figures to fit-width (1.0x).
     """
 
-    def __init__(self, fig, parent=None):
-        super().__init__(parent)
-        self._fig = fig
-        # Store natural aspect ratio from figure dimensions
-        self._natural_w = fig.get_figwidth()
-        self._natural_h = fig.get_figheight()
-        self._aspect = self._natural_h / self._natural_w if self._natural_w > 0 else 0.77
+    # Shared DPI for pre-rendering
+    RENDER_DPI = 150
 
-        # Render figure to PNG bytes at screen resolution
-        self._render_dpi = 150
+    @staticmethod
+    def pre_render(fig):
+        """Pre-render a figure to PNG bytes (can be called from a thread)."""
         buf = BytesIO()
         fig.savefig(buf, format='png', bbox_inches='tight',
-                    facecolor=fig.get_facecolor(), dpi=self._render_dpi)
+                    facecolor=fig.get_facecolor(), dpi=SvgFigureWidget.RENDER_DPI)
         png_bytes = buf.getvalue()
         buf.close()
+        return png_bytes
+
+    def __init__(self, fig, parent=None, png_bytes=None, max_width=None):
+        super().__init__(parent)
+        self._fig = fig
+        self._aspect = fig.get_figheight() / fig.get_figwidth() if fig.get_figwidth() > 0 else 0.77
+
+        # Zoom state
+        self._zoom_level = 1.0
+        # Base max width (set by scroll area to fit 2-up in viewport)
+        self._base_max_width = max_width or 550
+
+        # Use pre-rendered bytes or render now
+        if png_bytes is None:
+            png_bytes = SvgFigureWidget.pre_render(fig)
 
         # Load into QPixmap
         self._pixmap = QPixmap()
         self._pixmap.loadFromData(png_bytes)
 
+        # Compute actual aspect ratio from rendered pixmap (bbox_inches='tight' may alter it)
+        if self._pixmap.width() > 0:
+            self._aspect = self._pixmap.height() / self._pixmap.width()
+
         self.setPixmap(self._pixmap)
         self.setScaledContents(True)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        # Size policy: fill width, compute height from aspect ratio
-        sp = QSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        # Size policy: preferred width (won't expand beyond max), fixed height
+        sp = QSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         self.setSizePolicy(sp)
-        # Set initial height based on natural figure size
-        w = int(self._natural_w * 96)
-        h = int(self._natural_h * 96)
-        self.setMinimumHeight(int(h * 0.5))
-        self.setFixedHeight(h)
+        self.setMinimumHeight(50)
+        self.setMaximumWidth(self._base_max_width)
+        # Set initial size
+        init_h = int(self._base_max_width * self._aspect)
+        self.setFixedHeight(init_h)
 
     def resizeEvent(self, event):
         """Maintain aspect ratio when width changes."""
@@ -252,6 +273,58 @@ class SvgFigureWidget(QLabel):
         if new_h != self.height():
             self.setFixedHeight(new_h)
         super().resizeEvent(event)
+
+    def _get_sibling_figures(self):
+        """Find all SvgFigureWidget siblings in the same scroll area."""
+        # Walk up to find the WheelScrollArea ancestor
+        widget = self.parentWidget()
+        scroll_area = None
+        while widget is not None:
+            if isinstance(widget, WheelScrollArea):
+                scroll_area = widget
+                break
+            widget = widget.parentWidget()
+        if scroll_area is None:
+            return [self]
+        return scroll_area.findChildren(SvgFigureWidget)
+
+    def _apply_zoom(self):
+        """Recompute widget size from zoom level relative to base max width."""
+        zoomed_w = int(self._base_max_width * self._zoom_level)
+        zoomed_h = int(zoomed_w * self._aspect)
+        self.setMaximumWidth(zoomed_w)
+        self.setFixedHeight(zoomed_h)
+        if self._zoom_level > 1.0:
+            self.setMinimumWidth(zoomed_w)
+        else:
+            self.setMinimumWidth(0)
+
+    def set_zoom(self, zoom_level):
+        """Set zoom level without propagating to siblings (called by sibling sync)."""
+        self._zoom_level = zoom_level
+        self._apply_zoom()
+
+    def wheelEvent(self, event):
+        """Ctrl+mousewheel to zoom in/out — applies to ALL figures in the tab."""
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            delta = event.angleDelta().y()
+            step = 0.1 if delta > 0 else -0.1
+            new_zoom = max(0.25, min(3.0, self._zoom_level + step))
+            if new_zoom != self._zoom_level:
+                for fig_widget in self._get_sibling_figures():
+                    fig_widget.set_zoom(new_zoom)
+            event.accept()
+        else:
+            event.ignore()
+
+    def mouseDoubleClickEvent(self, event):
+        """Double-click resets zoom to default for ALL figures in the tab."""
+        for fig_widget in self._get_sibling_figures():
+            fig_widget._zoom_level = 1.0
+            fig_widget.setMaximumWidth(fig_widget._base_max_width)
+            fig_widget.setMinimumWidth(0)
+            fig_widget.setFixedHeight(int(fig_widget._base_max_width * fig_widget._aspect))
+        super().mouseDoubleClickEvent(event)
 
     def save_figure(self, path, fmt='pdf'):
         """Save the original figure to a file (high quality for export)."""
@@ -3508,7 +3581,6 @@ class ComparisonTab(QWidget):
         self._light_mode = False  # Dark mode by default
         self._show_statistics = True  # Show stats on bar charts by default
         self._statistics_results = []  # Store stats results for export
-        self._visualization_mode = 'cta_bars'  # 'cta_bars', 'actogram', or 'age_trends'
         self.setup_ui()
 
     def setup_ui(self):
@@ -3796,40 +3868,6 @@ class ComparisonTab(QWidget):
         group_row.addStretch()
         action_layout.addLayout(group_row)
 
-        # Visualization mode dropdown
-        viz_row = QHBoxLayout()
-        viz_label = QLabel("Visualization:")
-        viz_label.setStyleSheet("color: #cccccc;")
-        viz_row.addWidget(viz_label)
-        self.viz_mode_combo = QComboBox()
-        self.viz_mode_combo.addItems(["CTA + Bars", "Actogram", "Age Trends"])
-        self.viz_mode_combo.setStyleSheet("""
-            QComboBox {
-                background-color: #3c3c3c;
-                border: 1px solid #555555;
-                border-radius: 4px;
-                padding: 3px 8px;
-                color: #ffffff;
-            }
-            QComboBox::drop-down {
-                border: none;
-            }
-            QComboBox QAbstractItemView {
-                background-color: #3c3c3c;
-                color: #ffffff;
-                selection-background-color: #0078d4;
-            }
-        """)
-        self.viz_mode_combo.setToolTip(
-            "CTA + Bars: Circadian time averages and dark/light bar charts\n"
-            "Actogram: Population-level double-plotted actograms side-by-side\n"
-            "Age Trends: Overlaid age-based trends per group with statistics"
-        )
-        self.viz_mode_combo.currentIndexChanged.connect(self._on_viz_mode_changed)
-        viz_row.addWidget(self.viz_mode_combo)
-        viz_row.addStretch()
-        action_layout.addLayout(viz_row)
-
         # Light/Dark mode toggle
         self.light_mode_cb = QCheckBox("Light mode figures")
         self.light_mode_cb.setStyleSheet("color: #cccccc;")
@@ -3866,6 +3904,13 @@ class ComparisonTab(QWidget):
         self.compare_btn.clicked.connect(self.on_generate_comparison)
         self.compare_btn.setEnabled(False)
         action_layout.addWidget(self.compare_btn)
+
+        # Progress label
+        self.progress_label = QLabel("")
+        self.progress_label.setStyleSheet("color: #88bbee; font-size: 11px;")
+        self.progress_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.progress_label.setWordWrap(True)
+        action_layout.addWidget(self.progress_label)
 
         # Save button
         self.save_btn = QPushButton("Save Figures...")
@@ -3913,35 +3958,45 @@ class ComparisonTab(QWidget):
         from PyQt6.QtWidgets import QSizePolicy
         top_container.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
 
-        # Create figures container widget for splitter
-        figures_widget = QWidget()
-        figures_widget.setStyleSheet("background-color: #2d2d2d;")
-        figures_layout = QVBoxLayout(figures_widget)
-        figures_layout.setContentsMargins(0, 5, 0, 5)
-        figures_layout.setSpacing(5)
+        # Create figures tab widget for splitter
+        self.figures_tab_widget = QTabWidget()
+        self.figures_tab_widget.setStyleSheet("""
+            QTabWidget::pane {
+                border: 1px solid #3d3d3d;
+                background-color: #2d2d2d;
+            }
+            QTabBar::tab {
+                background-color: #353535;
+                color: #cccccc;
+                padding: 6px 14px;
+                margin-right: 2px;
+                border: 1px solid #3d3d3d;
+                border-bottom: none;
+                border-top-left-radius: 4px;
+                border-top-right-radius: 4px;
+                font-size: 11px;
+            }
+            QTabBar::tab:selected {
+                background-color: #2d2d2d;
+                border: 2px solid #3daee9;
+                border-bottom: none;
+                color: #ffffff;
+                font-weight: bold;
+            }
+            QTabBar::tab:hover:!selected {
+                background-color: #404040;
+            }
+        """)
 
-        # Figures section header
-        figures_header = QLabel("Comparison Figures")
-        figures_header.setStyleSheet("font-weight: bold; font-size: 14px; color: #ffffff;")
-        figures_layout.addWidget(figures_header)
-
-        # Figures container
-        self.figures_container = QWidget()
-        self.figures_container_layout = QVBoxLayout(self.figures_container)
-        self.figures_container_layout.setContentsMargins(0, 5, 0, 5)
-        self.figures_container_layout.setSpacing(15)
-
-        # Placeholder
+        # Placeholder tab
         placeholder = QLabel("No comparison generated yet. Add datasets and click 'Generate Comparison'.")
         placeholder.setStyleSheet("color: #888888; font-size: 12px; padding: 40px;")
         placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.figures_container_layout.addWidget(placeholder)
+        self.figures_tab_widget.addTab(placeholder, "Figures")
 
-        figures_layout.addWidget(self.figures_container, stretch=1)
-
-        # Add figures widget to splitter
-        self.main_splitter.addWidget(figures_widget)
-        figures_widget.setMinimumHeight(100)
+        # Add figures tab widget to splitter
+        self.main_splitter.addWidget(self.figures_tab_widget)
+        self.figures_tab_widget.setMinimumHeight(100)
 
         # Set initial splitter sizes (top section, figures get more space)
         self.main_splitter.setSizes([220, 500])
@@ -3970,15 +4025,6 @@ class ComparisonTab(QWidget):
     def _on_show_stats_changed(self, checked):
         """Handle show statistics checkbox change."""
         self._show_statistics = checked
-
-    def _on_viz_mode_changed(self, index):
-        """Handle visualization mode combo change."""
-        modes = ['cta_bars', 'actogram', 'age_trends']
-        self._visualization_mode = modes[index] if index < len(modes) else 'cta_bars'
-        # Bar grouping only relevant for CTA + Bars mode
-        self.grouping_combo.setEnabled(index == 0)
-        # Statistics not applicable to actograms
-        self.show_stats_cb.setEnabled(index != 1)
 
     def _on_table_cell_changed(self, row, column):
         """Handle changes to table cells."""
@@ -4329,6 +4375,11 @@ class ComparisonTab(QWidget):
                     enabled.append(dataset)
         return enabled
 
+    def _update_progress(self, message: str):
+        """Update the progress label and keep UI responsive."""
+        self.progress_label.setText(message)
+        QApplication.processEvents()
+
     def on_generate_comparison(self):
         """Generate comparison figures for loaded datasets."""
         enabled_datasets = self._get_enabled_datasets()
@@ -4343,6 +4394,10 @@ class ComparisonTab(QWidget):
         try:
             from core.comparison_figure_generator import ComparisonFigureGenerator
 
+            self.compare_btn.setEnabled(False)
+            self.save_btn.setEnabled(False)
+            self._update_progress("Generating figures...")
+
             # Extract colors from enabled datasets
             dataset_colors = [ds.get('color', self.DEFAULT_COLORS[i % len(self.DEFAULT_COLORS)])
                             for i, ds in enumerate(enabled_datasets)]
@@ -4352,19 +4407,27 @@ class ComparisonTab(QWidget):
                 bar_grouping=self._bar_grouping,
                 light_mode=self._light_mode,
                 dataset_colors=dataset_colors,
-                show_statistics=self._show_statistics,
-                visualization_mode=self._visualization_mode
+                show_statistics=self._show_statistics
             )
-            self._comparison_figures = generator.generate_all_pages(enabled_datasets)
-            self._enabled_datasets_for_save = enabled_datasets  # Store for saving
-            self._statistics_results = generator.statistics_results  # Store statistics for export
 
+            def progress_cb(msg):
+                self._update_progress(msg)
+
+            self._comparison_figures = generator.generate_all_pages(
+                enabled_datasets, progress_callback=progress_cb)
+            self._enabled_datasets_for_save = enabled_datasets
+            self._statistics_results = generator.statistics_results
+
+            self._update_progress("Rendering tabs...")
             self._display_comparison_figures()
 
-            # Enable save button now that figures exist
+            self._update_progress(f"Done — {len(self._comparison_figures)} figures")
             self.save_btn.setEnabled(True)
+            self.compare_btn.setEnabled(True)
 
         except Exception as e:
+            self._update_progress("")
+            self.compare_btn.setEnabled(True)
             QMessageBox.critical(self, "Error", f"Comparison generation failed:\n{str(e)}")
             import traceback
             traceback.print_exc()
@@ -4423,7 +4486,6 @@ class ComparisonTab(QWidget):
                 'smoothing_window': self._smoothing_window,
                 'bar_grouping': self._bar_grouping,
                 'light_mode': self._light_mode,
-                'visualization_mode': self._visualization_mode,
                 'datasets': []
             }
 
@@ -4449,7 +4511,7 @@ class ComparisonTab(QWidget):
                 stats_df = pd.DataFrame(self._statistics_results)
                 # Reorder columns for clarity
                 column_order = ['metric', 'phase', 'comparison', 'group1', 'group1_mean', 'group1_sem',
-                               'group2', 'group2_mean', 'group2_sem', 'test', 'p_value', 'significance', 'anova_p']
+                               'group2', 'group2_mean', 'group2_sem', 'test', 'p_value', 'q_value', 'significance', 'anova_p']
                 stats_df = stats_df[[c for c in column_order if c in stats_df.columns]]
                 stats_df.to_csv(stats_path, index=False)
                 saved_files.append(Path(stats_path).name)
@@ -4464,51 +4526,192 @@ class ComparisonTab(QWidget):
             import traceback
             traceback.print_exc()
 
+    def _classify_figure_tab(self, title: str) -> str:
+        """Map a figure page title to a tab name."""
+        if title in ("Comparison Summary", "Age Coverage Overview"):
+            return "Overview"
+        if title == "Statistical Analysis":
+            return "Statistics"
+        if title == "Sleep Analysis Comparison":
+            return "Sleep"
+        if title.startswith("Dark/Light Comparison"):
+            return "Bar Charts"
+
+        # Per-metric titles: "CTA: Metric", "Actogram: Metric pN",
+        # "Actogram Bars: Metric", "Age Trend: Metric pN", "Age Bars: Metric"
+        for prefix in ("CTA: ", "Actogram Bars: ", "Actogram: ", "Age Bars: ", "Age Trend: "):
+            if title.startswith(prefix):
+                metric = title[len(prefix):]
+                # Strip page suffix like " p1", " p2"
+                import re
+                metric = re.sub(r'\s+p\d+$', '', metric)
+                return metric
+
+        # Fallback
+        return "Other"
+
+    def _group_figures_into_tabs(self) -> dict:
+        """Group self._comparison_figures into {tab_name: [(title, fig), ...]}."""
+        from collections import OrderedDict
+        tabs = OrderedDict()
+        for title, fig in self._comparison_figures:
+            tab_name = self._classify_figure_tab(title)
+            if tab_name not in tabs:
+                tabs[tab_name] = []
+            tabs[tab_name].append((title, fig))
+        return tabs
+
+    _SCROLL_STYLE = """
+        QScrollArea { border: none; background-color: #2d2d2d; }
+        QScrollBar:vertical {
+            background-color: #2d2d2d; width: 12px; margin: 0;
+        }
+        QScrollBar::handle:vertical {
+            background-color: #555555; border-radius: 4px;
+            min-height: 30px; margin: 2px;
+        }
+        QScrollBar::handle:vertical:hover { background-color: #666666; }
+        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+    """
+
+    _FRAME_STYLE = """
+        QFrame {
+            background-color: #363636;
+            border: 1px solid #4d4d4d;
+            border-radius: 6px;
+            padding: 4px;
+        }
+    """
+
+    def _pre_render_all_figures(self):
+        """Pre-render all comparison figures to PNG bytes in parallel."""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        self._update_progress("Pre-rendering figures...")
+        rendered = {}
+
+        def render_one(idx, fig):
+            return idx, SvgFigureWidget.pre_render(fig)
+
+        with ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as executor:
+            futures = []
+            for idx, (title, fig) in enumerate(self._comparison_figures):
+                futures.append(executor.submit(render_one, idx, fig))
+
+            for future in as_completed(futures):
+                idx, png_bytes = future.result()
+                rendered[idx] = png_bytes
+
+        return rendered
+
+    def _compute_figure_max_width(self) -> int:
+        """Compute max width per figure so two fit side-by-side in the viewing area."""
+        # Use the tab widget width as the available area
+        available = self.figures_tab_widget.width()
+        if available < 400:
+            available = 1200  # fallback before first layout
+        # Subtract scrollbar (~14px), margins (10+10), spacing (8), frame padding (8+8 each)
+        usable = available - 14 - 20 - 8 - 32
+        return max(300, usable // 2)
+
+    def _create_figures_scroll_area(self, figures: list, rendered_cache: dict,
+                                     global_offset: int) -> QWidget:
+        """Create a scrollable widget with figures in a two-column grid layout.
+
+        Args:
+            figures: list of (title, fig) tuples
+            rendered_cache: dict of {global_index: png_bytes} from parallel pre-rendering
+            global_offset: starting index of these figures in self._comparison_figures
+        """
+        max_w = self._compute_figure_max_width()
+
+        scroll = WheelScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
+        scroll.setStyleSheet(self._SCROLL_STYLE)
+
+        container = QWidget()
+        container.setStyleSheet("background-color: #2d2d2d;")
+        outer_layout = QVBoxLayout(container)
+        outer_layout.setContentsMargins(5, 5, 5, 5)
+        outer_layout.setSpacing(8)
+
+        # Two-column grid: pair figures side-by-side
+        for i in range(0, len(figures), 2):
+            row_layout = QHBoxLayout()
+            row_layout.setSpacing(8)
+
+            for j in range(2):
+                if i + j >= len(figures):
+                    row_layout.addStretch(1)
+                    break
+
+                title, fig = figures[i + j]
+                global_idx = global_offset + i + j
+                png_bytes = rendered_cache.get(global_idx)
+
+                fig_frame = QFrame()
+                fig_frame.setStyleSheet(self._FRAME_STYLE)
+                frame_layout = QVBoxLayout(fig_frame)
+                frame_layout.setContentsMargins(4, 4, 4, 4)
+                frame_layout.setSpacing(2)
+
+                title_label = QLabel(title)
+                title_label.setStyleSheet(
+                    "font-weight: bold; font-size: 11px; color: #ffffff; border: none;")
+                frame_layout.addWidget(title_label)
+
+                svg_widget = SvgFigureWidget(fig, png_bytes=png_bytes, max_width=max_w)
+                frame_layout.addWidget(svg_widget)
+
+                row_layout.addWidget(fig_frame, stretch=1)
+
+            outer_layout.addLayout(row_layout)
+
+        outer_layout.addStretch()
+        scroll.setWidget(container)
+        scroll.install_filter_on_new_widgets()
+        return scroll
+
     def _display_comparison_figures(self):
-        """Display generated comparison figures in the scroll area."""
-        # Save current splitter sizes to restore after adding figures
+        """Display generated comparison figures in per-metric sub-tabs."""
         saved_sizes = self.main_splitter.sizes()
 
-        # Clear existing figures
-        while self.figures_container_layout.count() > 0:
-            item = self.figures_container_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+        # Clear all existing tabs
+        while self.figures_tab_widget.count() > 0:
+            widget = self.figures_tab_widget.widget(0)
+            self.figures_tab_widget.removeTab(0)
+            widget.deleteLater()
 
         if not self._comparison_figures:
             placeholder = QLabel("No figures generated.")
             placeholder.setStyleSheet("color: #888888; padding: 40px;")
             placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.figures_container_layout.addWidget(placeholder)
+            self.figures_tab_widget.addTab(placeholder, "Figures")
             return
 
-        for title, fig in self._comparison_figures:
-            # Create frame for each figure
-            fig_frame = QFrame()
-            fig_frame.setStyleSheet("""
-                QFrame {
-                    background-color: #363636;
-                    border: 1px solid #4d4d4d;
-                    border-radius: 6px;
-                    padding: 8px;
-                }
-            """)
-            frame_layout = QVBoxLayout(fig_frame)
-            frame_layout.setContentsMargins(8, 8, 8, 8)
+        # Pre-render all figures to PNG in parallel
+        rendered_cache = self._pre_render_all_figures()
 
-            # Title
-            title_label = QLabel(title)
-            title_label.setStyleSheet("font-weight: bold; font-size: 13px; color: #ffffff;")
-            frame_layout.addWidget(title_label)
+        # Group figures into tabs, tracking global indices
+        tabs = self._group_figures_into_tabs()
 
-            # SVG rendering for pixel-perfect vector display
-            svg_widget = SvgFigureWidget(fig)
-            frame_layout.addWidget(svg_widget)
+        # Build a map of global index for each figure
+        title_to_global = {}
+        for idx, (title, fig) in enumerate(self._comparison_figures):
+            title_to_global[id(fig)] = idx
 
-            self.figures_container_layout.addWidget(fig_frame)
+        self._update_progress("Building tabs...")
+        for tab_name, figures in tabs.items():
+            # Compute offset: find global index of first figure in this group
+            first_fig_id = id(figures[0][1])
+            global_offset = title_to_global.get(first_fig_id, 0)
 
-        # Re-apply scroll event filters on the main scroll area
-        self.main_scroll.install_filter_on_new_widgets()
+            scroll_widget = self._create_figures_scroll_area(
+                figures, rendered_cache, global_offset)
+            self.figures_tab_widget.addTab(scroll_widget, tab_name)
+            QApplication.processEvents()
 
         # Restore splitter sizes to prevent top section from expanding
         if saved_sizes and saved_sizes[0] > 0:
