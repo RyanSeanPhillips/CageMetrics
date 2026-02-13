@@ -12,7 +12,7 @@ Key metrics:
 """
 
 import numpy as np
-from typing import Dict, List, Tuple, Any, Optional
+from typing import Dict, List, Tuple, Any
 from dataclasses import dataclass
 
 

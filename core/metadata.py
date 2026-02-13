@@ -5,7 +5,7 @@ Defines standard and extended metadata fields, provides metadata editor dialog,
 and handles cagemate metadata storage.
 """
 
-from typing import Dict, Any, List, Optional, Set
+from typing import Dict, Any, List, Set
 from dataclasses import dataclass, field
 
 

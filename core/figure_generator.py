@@ -9,7 +9,6 @@ Creates matplotlib figures for:
 
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 from matplotlib.gridspec import GridSpec
 from matplotlib.patches import Rectangle
@@ -241,7 +240,6 @@ class FigureGenerator:
 
         # Each metric gets a horizontal bar
         bar_height = 0.8
-        total_minutes = n_days * 1440
 
         for idx, metric_name in enumerate(metric_names):
             y_pos = n_metrics - idx - 1
@@ -310,7 +308,6 @@ class FigureGenerator:
         """Create stacked daily traces page with CTA (with completeness on y2 axis)."""
         metrics = animal_data.get('metrics', {})
         n_days = animal_data.get('n_days', 1)
-        n_metrics = len(page_metrics)
 
         # Figure with 3 columns (one per metric), 2 rows (traces + CTA with completeness on y2)
         fig = Figure(figsize=(11, 8.5), dpi=self.FIGURE_DPI, facecolor=self.BG_COLOR)
@@ -429,7 +426,6 @@ class FigureGenerator:
         """
         metrics = animal_data.get('metrics', {})
         n_days = animal_data.get('n_days', 1)
-        n_metrics = len(page_metrics)
 
         fig = Figure(figsize=(11, 8.5), dpi=self.FIGURE_DPI, facecolor=self.BG_COLOR)
 
@@ -1023,11 +1019,9 @@ class FigureGenerator:
         light_stats = sleep_analysis.get('light_stats', {})
         dark_stats = sleep_analysis.get('dark_stats', {})
         total_stats = sleep_analysis.get('total_stats', {})
-        per_day_stats = sleep_analysis.get('per_day_stats', [])
         quality_metrics = sleep_analysis.get('quality_metrics', {})
         hist_light = sleep_analysis.get('histogram_light', ([], []))
         hist_dark = sleep_analysis.get('histogram_dark', ([], []))
-        per_day_histograms = sleep_analysis.get('per_day_histograms', [])
         n_days = sleep_analysis.get('n_days', 1)
         params = sleep_analysis.get('parameters', {})
         threshold = params.get('threshold', 0.5)

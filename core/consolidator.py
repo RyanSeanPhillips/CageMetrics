@@ -15,7 +15,7 @@ import json
 import numpy as np
 import pandas as pd
 from pathlib import Path
-from typing import Dict, Any, List, Optional, Set
+from typing import Dict, Any, List, Optional
 from datetime import datetime
 
 
@@ -89,8 +89,8 @@ class Consolidator:
 
     def consolidate(self, npz_paths: List[str], output_path: str,
                     filter_criteria=None, save_npz: bool = True,
-                    save_pdf: bool = True, layout_style: str = "classic",
-                    smoothing_window: int = 15) -> Dict[str, Any]:
+                    save_pdf: bool = True,
+                    smoothing_window: int = 15, **kwargs) -> Dict[str, Any]:
         """
         Consolidate multiple NPZ files into NPZ, Excel, and PDF formats.
 
@@ -100,7 +100,6 @@ class Consolidator:
             filter_criteria: Optional FilterCriteria used for selection
             save_npz: Also save consolidated NPZ file (default: True)
             save_pdf: Also save PDF figures (default: True)
-            layout_style: Figure layout style ("classic" or "matrix")
 
         Returns:
             Dictionary with consolidation results including output paths
@@ -182,14 +181,14 @@ class Consolidator:
             if filter_criteria:
                 if hasattr(filter_criteria, 'to_description'):
                     filter_desc = filter_criteria.to_description()
-            self._write_consolidated_pdf(pdf_path, animals, filter_desc, layout_style, smoothing_window)
+            self._write_consolidated_pdf(pdf_path, animals, filter_desc, smoothing_window=smoothing_window)
             results['output_paths'].append(str(pdf_path))
             results['pdf_path'] = str(pdf_path)
 
         return results
 
     def _write_consolidated_pdf(self, pdf_path: Path, animals: List[Dict],
-                                 filter_description: str, layout_style: str = "classic",
+                                 filter_description: str,
                                  smoothing_window: int = 15):
         """
         Write consolidated figures to PDF.
@@ -198,14 +197,13 @@ class Consolidator:
             pdf_path: Output PDF path
             animals: List of animal data dicts
             filter_description: Human-readable filter description
-            layout_style: Figure layout style ("classic" or "matrix")
             smoothing_window: Rolling average window size in minutes
         """
         from matplotlib.backends.backend_pdf import PdfPages
         from core.consolidation_figure_generator import ConsolidationFigureGenerator
 
         generator = ConsolidationFigureGenerator(smoothing_window=smoothing_window)
-        pages = generator.generate_all_pages(animals, filter_description, layout_style=layout_style)
+        pages = generator.generate_all_pages(animals, filter_description)
 
         with PdfPages(str(pdf_path)) as pdf:
             for title, fig in pages:

@@ -27,13 +27,13 @@ def clean_build_artifacts():
                 print(f"  Removed {dir_name}/")
             except PermissionError:
                 print(f"  Warning: Could not remove {dir_name}/ (files in use)")
-                print(f"  PyInstaller will clean it automatically...")
+                print("  PyInstaller will clean it automatically...")
             except Exception as e:
                 print(f"  Warning: Error removing {dir_name}/: {e}")
 
     # Note: dist/ folder is NOT cleaned to preserve version history
     if os.path.exists('dist'):
-        print(f"  Keeping dist/ folder (contains previous versions)")
+        print("  Keeping dist/ folder (contains previous versions)")
 
     # Clean Python cache files recursively
     for root, dirs, files in os.walk('.'):

@@ -17,17 +17,14 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTabWidget, QPushButton, QLabel, QLineEdit, QFileDialog,
     QScrollArea, QFrame, QStatusBar, QMessageBox, QDialog,
-    QProgressBar, QSizePolicy, QScroller, QListWidget, QListWidgetItem,
+    QProgressBar, QSizePolicy, QListWidget, QListWidgetItem,
     QAbstractItemView, QGroupBox, QTextEdit, QDialogButtonBox, QSplitter,
-    QCheckBox, QDoubleSpinBox, QPlainTextEdit, QToolTip, QComboBox,
+    QCheckBox, QDoubleSpinBox, QPlainTextEdit, QComboBox,
     QSplashScreen
 )
 from PyQt6.QtCore import Qt, QSettings, QTimer, pyqtSignal, QThread, QEvent
-from PyQt6.QtGui import QFont, QWheelEvent, QShortcut, QKeySequence, QIcon, QPixmap
+from PyQt6.QtGui import QFont, QShortcut, QKeySequence, QIcon, QPixmap
 
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
-from matplotlib.figure import Figure
 import matplotlib.pyplot as plt
 from io import BytesIO
 # QSvgWidget import removed - using raster QLabel rendering for performance
@@ -1100,9 +1097,9 @@ class AnalysisTab(QWidget):
         for i in range(0, len(filenames), 3):
             base = filenames[i].replace('_Figures.pdf', '')
             file_list_text += f"{base}:\n"
-            file_list_text += f"    _Figures.pdf\n"
-            file_list_text += f"    _Data.xlsx\n"
-            file_list_text += f"    _Data.npz\n\n"
+            file_list_text += "    _Figures.pdf\n"
+            file_list_text += "    _Data.xlsx\n"
+            file_list_text += "    _Data.npz\n\n"
 
         file_list.setPlainText(file_list_text.strip())
         details_layout.addWidget(file_list)
@@ -1430,7 +1427,6 @@ class ConsolidationTab(QWidget):
             True if pattern matches text
         """
         import re
-        pattern_orig = pattern
         pattern = pattern.lower().strip()
         text = text.lower()
 
@@ -1586,13 +1582,16 @@ class ConsolidationTab(QWidget):
         dialog.exec()
 
     def setup_ui(self):
-        """Set up the consolidation UI with full-tab scrolling."""
-        # Root layout for the tab - just holds the scroll area
+        """Set up the consolidation UI with splitter layout."""
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(0, 0, 0, 0)
         root_layout.setSpacing(0)
 
-        # Main scroll area for entire tab content
+        # Main splitter: top section (controls) + bottom section (figures)
+        self.main_splitter = QSplitter(Qt.Orientation.Vertical)
+        self.main_splitter.setStyleSheet("QSplitter::handle { background-color: #3d3d3d; height: 3px; }")
+
+        # Top section: scrollable controls area
         self.main_scroll = WheelScrollArea()
         self.main_scroll.setWidgetResizable(True)
         self.main_scroll.setStyleSheet("""
@@ -1619,7 +1618,6 @@ class ConsolidationTab(QWidget):
             }
         """)
 
-        # Container widget for all tab content
         scroll_content = QWidget()
         scroll_content.setStyleSheet("background-color: #2d2d2d;")
         main_layout = QVBoxLayout(scroll_content)
@@ -1743,51 +1741,6 @@ class ConsolidationTab(QWidget):
         # Action buttons row
         action_layout = QHBoxLayout()
 
-        # Layout style selector
-        layout_label = QLabel("Layout:")
-        layout_label.setStyleSheet("color: #ffffff; font-weight: bold;")
-        action_layout.addWidget(layout_label)
-
-        self.layout_style_combo = QComboBox()
-        self.layout_style_combo.addItems(["Classic", "Classic 48h", "Matrix", "Age Matrix"])
-        self.layout_style_combo.setStyleSheet("""
-            QComboBox {
-                background-color: #3c3c3c;
-                color: #ffffff;
-                border: 1px solid #555555;
-                border-radius: 4px;
-                padding: 4px 8px;
-                min-width: 100px;
-            }
-            QComboBox:hover {
-                border-color: #777777;
-            }
-            QComboBox::drop-down {
-                border: none;
-            }
-            QComboBox::down-arrow {
-                image: none;
-                border-left: 4px solid transparent;
-                border-right: 4px solid transparent;
-                border-top: 6px solid #ffffff;
-                margin-right: 6px;
-            }
-            QComboBox QAbstractItemView {
-                background-color: #3c3c3c;
-                color: #ffffff;
-                selection-background-color: #0078d4;
-            }
-        """)
-        self.layout_style_combo.setToolTip(
-            "Classic: 3 metrics per page with 36h stacked traces (L-D-L)\n"
-            "Classic 48h: 3 metrics per page with 48h traces (L-D-L-D)\n"
-            "Matrix: Daily trends across animals with individual traces\n"
-            "Age Matrix: Like Matrix but aligned by postnatal age (requires birth date)"
-        )
-        action_layout.addWidget(self.layout_style_combo)
-
-        action_layout.addSpacing(10)
-
         # Smoothing control
         smooth_label = QLabel("Smoothing:")
         smooth_label.setStyleSheet("color: #ffffff; font-weight: bold;")
@@ -1827,18 +1780,23 @@ class ConsolidationTab(QWidget):
 
         lists_container_layout.addWidget(right_widget, stretch=1)
 
-        # Add lists container directly to main layout (no splitter - everything scrolls together)
+        # Add lists container to the scrollable top section
         lists_container.setMinimumHeight(200)
-        lists_container.setMaximumHeight(350)  # Constrain height so figures get space
         main_layout.addWidget(lists_container)
 
-        # Create preview container and add directly to main layout
-        self._setup_preview_panel_widget()  # Creates self.preview_widget
-        main_layout.addWidget(self.preview_widget)
-
-        # Set scroll content
+        # Set scroll content and add to splitter (top part)
         self.main_scroll.setWidget(scroll_content)
-        root_layout.addWidget(self.main_scroll)
+        self.main_splitter.addWidget(self.main_scroll)
+
+        # Create preview tab widget and add to splitter (bottom part)
+        self._setup_preview_panel_widget()  # Creates self.preview_widget
+        self.main_splitter.addWidget(self.preview_widget)
+        self.preview_widget.setMinimumHeight(100)
+
+        # Set initial splitter sizes (top controls, bottom figures get more space)
+        self.main_splitter.setSizes([280, 500])
+
+        root_layout.addWidget(self.main_splitter)
 
     def _connect_signals(self):
         """Connect button signals."""
@@ -1938,7 +1896,6 @@ class ConsolidationTab(QWidget):
 
     def _scan_for_npz_files(self):
         """Scan the selected folder recursively for CageMetrics NPZ data files."""
-        import json
         import numpy as np
         from core.consolidation_filters import CagemateGenotypeCache
 
@@ -1954,7 +1911,6 @@ class ConsolidationTab(QWidget):
         # Fallback: if no files found with standard naming, look for any .npz
         # that contains metadata_json (i.e., individual animal data files)
         if not npz_files:
-            import numpy as np
             for npz_path in self._scan_dir.rglob("*.npz"):
                 try:
                     with np.load(str(npz_path), allow_pickle=True) as data:
@@ -2050,7 +2006,7 @@ class ConsolidationTab(QWidget):
                     f"Cagemate Genotype: {cagemate_geno_str}",
                     f"Cagemate Sex: {cagemate_sex_str}",
                     f"Days: {metadata.get('n_days_analyzed', 'Unknown')}",
-                    f"",
+                    "",
                     f"File: {npz_path}"
                 ]
                 item.setToolTip('\n'.join(tooltip_lines))
@@ -2246,14 +2202,12 @@ class ConsolidationTab(QWidget):
         try:
             from core.consolidator import Consolidator
             consolidator = Consolidator()
-            layout_style = self.layout_style_combo.currentText().lower().replace(" ", "_")  # "classic", "classic_48h", or "matrix"
             smoothing_window = self.group_smoothing_spin.value()
             result = consolidator.consolidate(
                 npz_paths, save_path,
                 filter_criteria=self._filter_criteria,
                 save_npz=True,
                 save_pdf=True,
-                layout_style=layout_style,
                 smoothing_window=smoothing_window
             )
 
@@ -2583,9 +2537,6 @@ class ConsolidationTab(QWidget):
 
     def _populate_filter_checkboxes(self):
         """Populate filter checkboxes based on discovered metadata values."""
-        from PyQt6.QtWidgets import QCheckBox
-        from core.consolidation_filters import MetadataDiscovery
-
         if not self._metadata_discovery:
             return
 
@@ -3156,34 +3107,182 @@ class ConsolidationTab(QWidget):
 
     # === Preview Panel Methods ===
 
+    # Shared styles for Group tab figure display (matching ComparisonTab)
+    _GROUP_SCROLL_STYLE = """
+        QScrollArea { border: none; background-color: #2d2d2d; }
+        QScrollBar:vertical {
+            background-color: #2d2d2d; width: 12px; margin: 0;
+        }
+        QScrollBar::handle:vertical {
+            background-color: #555555; border-radius: 4px;
+            min-height: 30px; margin: 2px;
+        }
+        QScrollBar::handle:vertical:hover { background-color: #666666; }
+        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+    """
+
+    _GROUP_FRAME_STYLE = """
+        QFrame {
+            background-color: #363636;
+            border: 1px solid #4d4d4d;
+            border-radius: 6px;
+            padding: 4px;
+        }
+    """
+
     def _setup_preview_panel_widget(self):
-        """Set up the preview panel widget (for use in splitter)."""
-        # Create the preview widget container
+        """Set up the preview panel widget with a QTabWidget for figure tabs."""
         self.preview_widget = QWidget()
         self.preview_widget.setStyleSheet("background-color: #2d2d2d;")
         preview_layout = QVBoxLayout(self.preview_widget)
         preview_layout.setContentsMargins(0, 5, 0, 5)
         preview_layout.setSpacing(5)
 
-        # Preview section header
-        preview_header = QLabel("Preview Figures")
-        preview_header.setStyleSheet("font-weight: bold; font-size: 14px; color: #ffffff;")
-        preview_layout.addWidget(preview_header)
+        # Preview tab widget (same styling as ComparisonTab)
+        self.preview_tab_widget = QTabWidget()
+        self.preview_tab_widget.setStyleSheet("""
+            QTabWidget::pane {
+                border: 1px solid #3d3d3d;
+                background-color: #2d2d2d;
+            }
+            QTabBar::tab {
+                background-color: #353535;
+                color: #cccccc;
+                padding: 6px 14px;
+                margin-right: 2px;
+                border: 1px solid #3d3d3d;
+                border-bottom: none;
+                border-top-left-radius: 4px;
+                border-top-right-radius: 4px;
+                font-size: 11px;
+            }
+            QTabBar::tab:selected {
+                background-color: #2d2d2d;
+                border: 2px solid #3daee9;
+                border-bottom: none;
+                color: #ffffff;
+                font-weight: bold;
+            }
+            QTabBar::tab:hover:!selected {
+                background-color: #404040;
+            }
+        """)
 
-        # Preview container for figures (no separate scroll - main_scroll handles it)
-        self.preview_container = QWidget()
-        self.preview_container.setStyleSheet("background-color: #2d2d2d;")
-        self.preview_container_layout = QVBoxLayout(self.preview_container)
-        self.preview_container_layout.setContentsMargins(0, 5, 0, 5)
-        self.preview_container_layout.setSpacing(15)
-
-        # Placeholder content
+        # Placeholder tab
         placeholder = QLabel("Click 'Generate Preview' to see consolidated figures")
+        placeholder.setStyleSheet("color: #8d8d8d; font-size: 12px; padding: 40px;")
         placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        placeholder.setStyleSheet("color: #8d8d8d; font-size: 14px; padding: 50px;")
-        self.preview_container_layout.addWidget(placeholder)
+        self.preview_tab_widget.addTab(placeholder, "Figures")
 
-        preview_layout.addWidget(self.preview_container, stretch=1)
+        preview_layout.addWidget(self.preview_tab_widget, stretch=1)
+
+    def _classify_group_figure_tab(self, title: str) -> str:
+        """Map a figure page title to a tab name for the Group tab."""
+        if title == "Summary":
+            return "Overview"
+        if title.startswith("CTA: "):
+            return "CTA"
+        if title.startswith("Daily: "):
+            return "By Day"
+        if title == "Age Coverage" or title.startswith("Age: "):
+            return "By Age"
+        if title == "Statistics":
+            return "Statistics"
+        if title == "Sleep Analysis":
+            return "Sleep"
+        return "Other"
+
+    def _group_preview_figures_into_tabs(self) -> dict:
+        """Group self._preview_figures into {tab_name: [(title, fig), ...]}."""
+        from collections import OrderedDict
+        tabs = OrderedDict()
+        for title, fig in self._preview_figures:
+            tab_name = self._classify_group_figure_tab(title)
+            if tab_name not in tabs:
+                tabs[tab_name] = []
+            tabs[tab_name].append((title, fig))
+        return tabs
+
+    def _pre_render_group_figures(self):
+        """Pre-render all preview figures to PNG bytes in parallel."""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        rendered = {}
+
+        def render_one(idx, fig):
+            return idx, SvgFigureWidget.pre_render(fig)
+
+        with ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as executor:
+            futures = []
+            for idx, (title, fig) in enumerate(self._preview_figures):
+                futures.append(executor.submit(render_one, idx, fig))
+
+            for future in as_completed(futures):
+                idx, png_bytes = future.result()
+                rendered[idx] = png_bytes
+
+        return rendered
+
+    def _compute_group_figure_max_width(self) -> int:
+        """Compute max width per figure so two fit side-by-side."""
+        available = self.preview_tab_widget.width()
+        if available < 400:
+            available = 1200
+        usable = available - 14 - 20 - 8 - 32
+        return max(300, usable // 2)
+
+    def _create_group_figures_scroll_area(self, figures: list, rendered_cache: dict,
+                                          global_offset: int) -> QWidget:
+        """Create a scrollable widget with figures in a two-column grid layout."""
+        max_w = self._compute_group_figure_max_width()
+
+        scroll = WheelScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
+        scroll.setStyleSheet(self._GROUP_SCROLL_STYLE)
+
+        container = QWidget()
+        container.setStyleSheet("background-color: #2d2d2d;")
+        outer_layout = QVBoxLayout(container)
+        outer_layout.setContentsMargins(5, 5, 5, 5)
+        outer_layout.setSpacing(8)
+
+        for i in range(0, len(figures), 2):
+            row_layout = QHBoxLayout()
+            row_layout.setSpacing(8)
+
+            for j in range(2):
+                if i + j >= len(figures):
+                    row_layout.addStretch(1)
+                    break
+
+                title, fig = figures[i + j]
+                global_idx = global_offset + i + j
+                png_bytes = rendered_cache.get(global_idx)
+
+                fig_frame = QFrame()
+                fig_frame.setStyleSheet(self._GROUP_FRAME_STYLE)
+                frame_layout = QVBoxLayout(fig_frame)
+                frame_layout.setContentsMargins(4, 4, 4, 4)
+                frame_layout.setSpacing(2)
+
+                title_label = QLabel(title)
+                title_label.setStyleSheet(
+                    "font-weight: bold; font-size: 11px; color: #ffffff; border: none;")
+                frame_layout.addWidget(title_label)
+
+                svg_widget = SvgFigureWidget(fig, png_bytes=png_bytes, max_width=max_w)
+                frame_layout.addWidget(svg_widget)
+
+                row_layout.addWidget(fig_frame, stretch=1)
+
+            outer_layout.addLayout(row_layout)
+
+        outer_layout.addStretch()
+        scroll.setWidget(container)
+        scroll.install_filter_on_new_widgets()
+        return scroll
 
     def on_edit_all_metadata(self):
         """Open the metadata editor for all detected NPZ files."""
@@ -3263,7 +3362,6 @@ class ConsolidationTab(QWidget):
             generator = ConsolidationFigureGenerator(smoothing_window=smoothing_window)
 
             filter_desc = self._filter_criteria.to_description() if self._filter_criteria else "No filters"
-            layout_style = self.layout_style_combo.currentText().lower().replace(" ", "_")
 
             def on_progress(current, total, message):
                 if progress.wasCanceled():
@@ -3279,7 +3377,7 @@ class ConsolidationTab(QWidget):
             self._preview_generator = generator
 
             self._preview_figures = generator.generate_all_pages(
-                experiments, filter_desc, layout_style=layout_style,
+                experiments, filter_desc,
                 progress_callback=on_progress)
 
             if progress.wasCanceled():
@@ -3414,36 +3512,39 @@ class ConsolidationTab(QWidget):
             return None
 
     def _display_preview_figures(self):
-        """Display generated preview figures in the preview panel."""
-        # Clear existing content
-        while self.preview_container_layout.count():
-            child = self.preview_container_layout.takeAt(0)
-            if child.widget():
-                child.widget().deleteLater()
+        """Display generated preview figures in tabbed layout with two-column grid."""
+        # Clear all existing tabs
+        while self.preview_tab_widget.count() > 0:
+            widget = self.preview_tab_widget.widget(0)
+            self.preview_tab_widget.removeTab(0)
+            widget.deleteLater()
 
-        # Add each figure
-        for title, fig in self._preview_figures:
-            fig_frame = QFrame()
-            fig_frame.setStyleSheet("QFrame { background-color: #252525; border: 1px solid #3d3d3d; }")
-            fig_layout = QVBoxLayout(fig_frame)
-            fig_layout.setContentsMargins(5, 5, 5, 5)
-            fig_layout.setSpacing(2)
+        if not self._preview_figures:
+            placeholder = QLabel("No figures generated.")
+            placeholder.setStyleSheet("color: #888888; padding: 40px;")
+            placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.preview_tab_widget.addTab(placeholder, "Figures")
+            return
 
-            # Title
-            title_label = QLabel(title)
-            title_label.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
-            title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            fig_layout.addWidget(title_label)
+        # Pre-render all figures to PNG in parallel
+        rendered_cache = self._pre_render_group_figures()
 
-            # SVG rendering for pixel-perfect vector display
-            svg_widget = SvgFigureWidget(fig)
-            fig_layout.addWidget(svg_widget)
+        # Group figures into tabs
+        tabs = self._group_preview_figures_into_tabs()
 
+        # Build a map of global index for each figure
+        title_to_global = {}
+        for idx, (title, fig) in enumerate(self._preview_figures):
+            title_to_global[id(fig)] = idx
 
-            self.preview_container_layout.addWidget(fig_frame)
+        for tab_name, figures in tabs.items():
+            first_fig_id = id(figures[0][1])
+            global_offset = title_to_global.get(first_fig_id, 0)
 
-        # Re-apply scroll event filters on the main scroll area
-        self.main_scroll.install_filter_on_new_widgets()
+            scroll_widget = self._create_group_figures_scroll_area(
+                figures, rendered_cache, global_offset)
+            self.preview_tab_widget.addTab(scroll_widget, tab_name)
+            QApplication.processEvents()
 
     def _show_expanded_matrix(self, metric_name: str, is_age: bool):
         """Show expanded matrix with all animals in a popup dialog."""
@@ -3451,7 +3552,6 @@ class ConsolidationTab(QWidget):
             return
 
         # Find the actual metric name (title may have been truncated)
-        from core.consolidation_figure_generator import ConsolidationFigureGenerator
         generator = self._preview_generator
         common_metrics = generator._get_common_metrics(self._preview_experiments)
 
@@ -3586,8 +3686,7 @@ class ComparisonTab(QWidget):
     def setup_ui(self):
         """Set up the comparison tab UI with full-tab scrolling and splitter."""
         from PyQt6.QtWidgets import (QSpinBox, QComboBox, QCheckBox, QTableWidget,
-                                      QTableWidgetItem, QHeaderView, QColorDialog)
-        from PyQt6.QtGui import QColor
+                                      QHeaderView)
 
         # Default colors for datasets
         self.DEFAULT_COLORS = [
@@ -4516,15 +4615,158 @@ class ComparisonTab(QWidget):
                 stats_df.to_csv(stats_path, index=False)
                 saved_files.append(Path(stats_path).name)
 
+            # Export Excel workbook with all comparison data
+            excel_path = file_path.replace('.pdf', '.xlsx')
+            try:
+                self._export_comparison_excel(excel_path, self._enabled_datasets_for_save)
+                saved_files.append(Path(excel_path).name)
+            except Exception as excel_err:
+                print(f"Warning: Excel export failed: {excel_err}")
+                import traceback
+                traceback.print_exc()
+
             QMessageBox.information(
                 self, "Saved",
-                f"Comparison saved:\n" + "\n".join(f"• {f}" for f in saved_files)
+                "Comparison saved:\n" + "\n".join(f"• {f}" for f in saved_files)
             )
 
         except Exception as e:
             QMessageBox.critical(self, "Save Error", f"Failed to save comparison:\n{str(e)}")
             import traceback
             traceback.print_exc()
+
+    def _export_comparison_excel(self, excel_path: str, datasets: list):
+        """Export comparison data to a multi-sheet Excel workbook.
+
+        Sheets:
+        - Summary: dataset info
+        - CTA_{metric}: per-minute CTA values for each dataset
+        - Dark_Light_Means: per-animal dark/light means
+        - Sleep: sleep metrics per dataset (if available)
+        - Statistics: statistical test results
+        """
+        import pandas as pd
+        import numpy as np
+
+        def _clean_metric_name(name):
+            return name.replace(' ', '_').replace('/', '_').replace('(', '').replace(')', '').replace('%', 'pct')
+
+        common_metrics = sorted(
+            set.intersection(*(set(ds.get('metric_names', [])) for ds in datasets))
+        ) if datasets else []
+
+        with pd.ExcelWriter(excel_path, engine='openpyxl') as writer:
+            # --- Summary sheet ---
+            summary_rows = []
+            for i, ds in enumerate(datasets):
+                meta = ds.get('consolidation_metadata', {})
+                summary_rows.append({
+                    'Dataset': meta.get('display_name', ds.get('filename', f'Dataset {i+1}')),
+                    'Filename': ds.get('filename', ''),
+                    'Path': ds.get('path', ''),
+                    'N_Animals': meta.get('n_animals', 0),
+                    'Filter_Description': meta.get('filter_description', ''),
+                    'Color': ds.get('color', ''),
+                    'Metrics': ', '.join(ds.get('metric_names', []))
+                })
+            pd.DataFrame(summary_rows).to_excel(writer, sheet_name='Summary', index=False)
+
+            # --- Per-metric CTA sheets ---
+            for metric_name in common_metrics:
+                key_base = _clean_metric_name(metric_name)
+                sheet_name = f'CTA_{key_base}'[:31]  # Excel sheet name max 31 chars
+
+                # Build CTA dataframe: ZT_Minute, ZT_Hour, then per-dataset columns
+                n_minutes = 1440
+                cta_data = {
+                    'ZT_Minute': list(range(n_minutes)),
+                    'ZT_Hour': [m / 60.0 for m in range(n_minutes)]
+                }
+
+                for i, ds in enumerate(datasets):
+                    meta = ds.get('consolidation_metadata', {})
+                    name = meta.get('display_name', ds.get('filename', f'Dataset {i+1}'))
+                    grand_cta = ds.get(f'{key_base}_grand_cta')
+                    grand_sem = ds.get(f'{key_base}_grand_sem')
+
+                    if grand_cta is not None and len(grand_cta) == n_minutes:
+                        cta_data[f'{name}_CTA'] = grand_cta
+                    if grand_sem is not None and len(grand_sem) == n_minutes:
+                        cta_data[f'{name}_SEM'] = grand_sem
+
+                pd.DataFrame(cta_data).to_excel(writer, sheet_name=sheet_name, index=False)
+
+            # --- Dark/Light Means sheet (per-animal level) ---
+            dl_rows = []
+            for metric_name in common_metrics:
+                key_base = _clean_metric_name(metric_name)
+                for i, ds in enumerate(datasets):
+                    meta = ds.get('consolidation_metadata', {})
+                    ds_name = meta.get('display_name', ds.get('filename', f'Dataset {i+1}'))
+                    dark_arr = ds.get(f'{key_base}_dark_means', np.array([]))
+                    light_arr = ds.get(f'{key_base}_light_means', np.array([]))
+
+                    # Get animal metadata for IDs
+                    animal_meta = ds.get('animal_metadata', [])
+                    if isinstance(animal_meta, str):
+                        import json
+                        animal_meta = json.loads(animal_meta)
+
+                    n_animals = max(len(dark_arr), len(light_arr))
+                    for a_idx in range(n_animals):
+                        animal_id = ''
+                        if a_idx < len(animal_meta):
+                            animal_id = animal_meta[a_idx].get('animal_id', f'Animal_{a_idx}')
+
+                        dl_rows.append({
+                            'Metric': metric_name,
+                            'Dataset': ds_name,
+                            'Animal_ID': animal_id,
+                            'Dark_Mean': dark_arr[a_idx] if a_idx < len(dark_arr) else np.nan,
+                            'Light_Mean': light_arr[a_idx] if a_idx < len(light_arr) else np.nan,
+                        })
+
+            if dl_rows:
+                pd.DataFrame(dl_rows).to_excel(writer, sheet_name='Dark_Light_Means', index=False)
+
+            # --- Sleep sheet ---
+            sleep_keys = [
+                ('sleep_total_minutes', 'Total Sleep (min)'),
+                ('sleep_bout_count', 'Bout Count'),
+                ('sleep_mean_bout_duration', 'Mean Bout Duration (min)'),
+                ('sleep_longest_bout', 'Longest Bout (min)'),
+            ]
+            sleep_rows = []
+            for ds_i, ds in enumerate(datasets):
+                if not ds.get('has_sleep_data', False):
+                    continue
+                meta = ds.get('consolidation_metadata', {})
+                ds_name = meta.get('display_name', ds.get('filename', f'Dataset {ds_i+1}'))
+
+                for key_base, label in sleep_keys:
+                    light_arr = ds.get(f'{key_base}_light', np.array([]))
+                    dark_arr = ds.get(f'{key_base}_dark', np.array([]))
+
+                    n_animals = max(len(light_arr), len(dark_arr))
+                    for a_idx in range(n_animals):
+                        sleep_rows.append({
+                            'Dataset': ds_name,
+                            'Metric': label,
+                            'Animal_Index': a_idx,
+                            'Light_Value': light_arr[a_idx] if a_idx < len(light_arr) else np.nan,
+                            'Dark_Value': dark_arr[a_idx] if a_idx < len(dark_arr) else np.nan,
+                        })
+
+            if sleep_rows:
+                pd.DataFrame(sleep_rows).to_excel(writer, sheet_name='Sleep', index=False)
+
+            # --- Statistics sheet ---
+            if self._statistics_results:
+                stats_df = pd.DataFrame(self._statistics_results)
+                column_order = ['metric', 'phase', 'comparison', 'group1', 'group1_mean', 'group1_sem',
+                               'group2', 'group2_mean', 'group2_sem', 'test', 'p_value', 'q_value', 'significance', 'anova_p']
+                stats_df = stats_df[[c for c in column_order if c in stats_df.columns]]
+                stats_df.to_excel(writer, sheet_name='Statistics', index=False)
 
     def _classify_figure_tab(self, title: str) -> str:
         """Map a figure page title to a tab name."""

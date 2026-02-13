@@ -7,7 +7,7 @@ behavioral metrics from Allentown cage monitoring data.
 
 import pandas as pd
 import numpy as np
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, Optional
 from concurrent.futures import ThreadPoolExecutor
 from .data_loader import DataLoader
 from .parallel_utils import (

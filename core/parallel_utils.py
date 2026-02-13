@@ -5,9 +5,8 @@ Uses concurrent.futures for parallel processing of animals and metrics.
 """
 
 import numpy as np
-import pandas as pd
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
-from typing import Dict, Any, List, Optional, Callable
+from typing import Dict, List, Callable
 import multiprocessing
 
 

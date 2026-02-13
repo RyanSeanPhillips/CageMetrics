@@ -8,7 +8,6 @@ Creates matplotlib figures for comparing consolidated NPZ files:
 """
 
 import numpy as np
-import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 from matplotlib.gridspec import GridSpec
 from matplotlib.patches import Rectangle
@@ -252,9 +251,9 @@ class ComparisonFigureGenerator:
         for spine in ax.spines.values():
             spine.set_color(self.GRID_COLOR)
 
-        legend = ax.legend(loc='upper right', fontsize=9, framealpha=0.8,
-                           facecolor=self.BG_COLOR, edgecolor=self.GRID_COLOR,
-                           labelcolor=self.TEXT_COLOR)
+        ax.legend(loc='upper right', fontsize=9, framealpha=0.8,
+                  facecolor=self.BG_COLOR, edgecolor=self.GRID_COLOR,
+                  labelcolor=self.TEXT_COLOR)
 
         return fig
 
@@ -330,7 +329,6 @@ class ComparisonFigureGenerator:
             ])
 
         # Draw table - adjusted column widths to prevent overflow
-        n_cols = len(headers)
         n_rows = len(rows)
         col_widths = [0.05, 0.22, 0.07, 0.07, 0.42, 0.12]
 
@@ -389,10 +387,8 @@ class ComparisonFigureGenerator:
     def create_cta_comparison_page(self, datasets: List[Dict[str, Any]],
                                     metrics: List[str], page_num: int) -> Figure:
         """Create page with overlaid CTA traces for multiple datasets (36hr view, 2x3 grid)."""
-        n_metrics = len(metrics)
         fig = Figure(figsize=(11, 8.5), dpi=150, facecolor=self.BG_COLOR)
 
-        n_datasets = len(datasets)
         fig.suptitle(f"CTA Comparison (Page {page_num}) - Shading = SEM",
                      fontsize=14, fontweight='bold', color=self.TEXT_COLOR, y=0.98)
 
@@ -473,8 +469,6 @@ class ComparisonFigureGenerator:
                                     metrics: List[str], page_num: int = 1,
                                     total_pages: int = 1) -> Figure:
         """Create page with bar chart comparisons of dark/light means."""
-        n_metrics = len(metrics)
-
         fig = Figure(figsize=(11, 8.5), dpi=150, facecolor=self.BG_COLOR)
 
         grouping_text = "by Dataset" if self.bar_grouping == 'dataset' else "by Light/Dark"
@@ -1239,7 +1233,6 @@ class ComparisonFigureGenerator:
         Returns list of (title, figure) tuples.
         """
         key_base = self._clean_metric_name(metric_name)
-        n_datasets = len(datasets)
         pages = []
 
         # Extract daily data for all datasets and compute per-day population means + SEMs
@@ -1889,7 +1882,6 @@ class ComparisonFigureGenerator:
         one per postnatal age + grand average CTA. Bar chart page at end.
         """
         key_base = self._clean_metric_name(metric_name)
-        n_datasets = len(datasets)
         pages = []
 
         # Compute per-age data for all datasets

@@ -11,7 +11,6 @@ import platform
 import json
 import threading
 from datetime import datetime
-from pathlib import Path
 
 from core.config import (
     get_config_dir,
@@ -63,7 +62,7 @@ def init_telemetry():
 
     Call this once at app startup (after first-launch dialog).
     """
-    global _telemetry_initialized, _session_data
+    global _telemetry_initialized
 
     if not is_telemetry_enabled():
         return
@@ -94,7 +93,6 @@ def init_telemetry():
 
 def _update_engagement_time():
     """Update engagement time tracking."""
-    global _session_data
     import time
 
     current_time = time.time()
@@ -328,7 +326,6 @@ def log_file_loaded(file_type, animal_count=0, **extra_params):
         file_type (str): File type ('npz', 'xlsx', 'consolidated_npz')
         animal_count (int): Number of animals/files loaded
     """
-    global _session_data
     _session_data['files_loaded'] += 1
 
     params = {
@@ -348,7 +345,6 @@ def log_consolidation_run(animal_count, filter_criteria=None, **extra_params):
         animal_count (int): Number of animals consolidated
         filter_criteria (str, optional): Description of filters applied
     """
-    global _session_data
     _session_data['consolidations_run'] += 1
 
     params = {
@@ -367,7 +363,6 @@ def log_comparison_run(dataset_count, **extra_params):
     Args:
         dataset_count (int): Number of datasets compared
     """
-    global _session_data
     _session_data['comparisons_run'] += 1
 
     params = {
@@ -385,7 +380,6 @@ def log_export(export_type, **extra_params):
     Args:
         export_type (str): Export type ('pdf', 'xlsx', 'npz', 'csv')
     """
-    global _session_data
     _session_data['exports'][export_type] = \
         _session_data['exports'].get(export_type, 0) + 1
 
@@ -403,7 +397,6 @@ def log_feature_used(feature_name, **extra_params):
         feature_name (str): Feature identifier
             Examples: 'statistics_enabled', 'filter_applied', 'metadata_edited'
     """
-    global _session_data
     _session_data['features_used'].add(feature_name)
 
     params = {'feature': feature_name}

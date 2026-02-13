@@ -12,9 +12,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 from matplotlib.gridspec import GridSpec
-from matplotlib.patches import Rectangle
 from typing import Dict, Any, List, Tuple, Optional
-from dataclasses import dataclass
 
 
 class ConsolidationFigureGenerator:
@@ -63,31 +61,47 @@ class ConsolidationFigureGenerator:
 
     def generate_all_pages(self, experiments: List[Dict[str, Any]],
                            filter_description: str,
-                           layout_style: str = "classic",
+                           layout_style: str = "all",
                            progress_callback=None) -> List[Tuple[str, Figure]]:
         """
         Generate all figure pages for consolidated experiments.
 
+        Generates all visualization types: Summary, 48h CTA traces, daily matrix,
+        age matrix (if age data), statistics, and sleep analysis.
+
         Args:
             experiments: List of experiment data dicts (from _load_npz_full)
             filter_description: Human-readable filter criteria string
-            layout_style: "classic" (3 metrics/page, 36h stacked traces),
-                         "classic_48h" (3 metrics/page, 48h stacked traces), or
-                         "matrix" (1 metric/page, daily matrix grid)
+            layout_style: Ignored (kept for backwards compat). Always generates all modes.
             progress_callback: Optional callable(current, total, message) for progress
 
         Returns:
-            List of (title, figure) tuples
+            List of (title, figure) tuples. Titles encode tab classification:
+            - "Summary" -> Overview tab
+            - "CTA: page N" -> CTA tab
+            - "Daily: {metric}" -> By Day tab
+            - "Age Coverage" -> By Age tab
+            - "Age: {metric}" -> By Age tab
+            - "Statistics" -> Statistics tab
+            - "Sleep Analysis" -> Sleep tab
         """
+        import math
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        import multiprocessing
+
         pages = []
         common_metrics = self._get_common_metrics(experiments)
 
+        has_age_data = any(
+            exp.get('metadata', {}).get('age_days_at_start') is not None
+            for exp in experiments
+        )
+
         # Estimate total pages for progress
-        if layout_style in ("matrix", "age_matrix"):
-            total_pages = 1 + len(common_metrics) + 1 + 1  # summary + metrics + stats + sleep
-        else:
-            import math
-            total_pages = 1 + math.ceil(len(common_metrics) / 3) + 1 + 1
+        n_cta_pages = math.ceil(len(common_metrics) / 3)
+        n_matrix_pages = len(common_metrics)
+        n_age_pages = len(common_metrics) if has_age_data else 0
+        total_pages = 1 + n_cta_pages + n_matrix_pages + (1 if has_age_data else 0) + n_age_pages + 1 + 1
         current_page = 0
 
         def _report(msg):
@@ -96,81 +110,29 @@ class ConsolidationFigureGenerator:
             if progress_callback:
                 progress_callback(current_page, total_pages, msg)
 
-        # Page 1: Summary with experiment list and completeness
+        # === Summary page ===
         _report("Generating summary page...")
         fig_summary = self.create_summary_page(experiments, filter_description)
         pages.append(("Summary", fig_summary))
 
-        if layout_style == "age_matrix":
-            # Check if any experiments have age data
-            has_age_data = any(
-                exp.get('metadata', {}).get('age_days_at_start') is not None
-                for exp in experiments
-            )
-            if not has_age_data:
-                # Create a single info page explaining no age data
-                fig_info = Figure(figsize=(11, 8.5), dpi=self.figure_dpi, facecolor=self.BG_COLOR)
-                ax = fig_info.add_subplot(111)
-                ax.set_facecolor(self.BG_COLOR)
-                ax.text(0.5, 0.55, "Age Matrix Unavailable", fontsize=18, fontweight='bold',
-                        color=self.TEXT_COLOR, ha='center', va='center', transform=ax.transAxes)
-                ax.text(0.5, 0.42,
-                        "No birth date data found in the loaded animals.\n\n"
-                        "To use Age Matrix, the source data must include a 'birth.date' column\n"
-                        "so that postnatal age can be computed for each recording day.\n\n"
-                        "Re-export the data from PhysioMetrics with birth dates included,\n"
-                        "or use the regular Matrix view instead.",
-                        fontsize=11, color='#aaaaaa', ha='center', va='center',
-                        transform=ax.transAxes, linespacing=1.6)
-                ax.axis('off')
-                pages.append(("Age Matrix - No Data", fig_info))
-            else:
-                # Age coverage overview page
-                _report("Generating age coverage overview...")
-                fig_coverage = self.create_age_coverage_page(experiments)
-                if fig_coverage is not None:
-                    pages.append(("Age Coverage", fig_coverage))
+        # === 48h CTA traces (3 metrics per page) ===
+        metrics_per_page = 3
+        for page_idx in range(0, len(common_metrics), metrics_per_page):
+            page_metrics = common_metrics[page_idx:page_idx + metrics_per_page]
+            page_num = page_idx // metrics_per_page + 1
+            _report(f"Generating CTA page {page_num}...")
+            fig_traces = self.create_consolidated_traces_page_48h(experiments, page_metrics, page_num)
+            pages.append((f"CTA: page {page_num}", fig_traces))
 
-                # Generate age matrix pages in parallel
-                _report("Generating age matrix pages in parallel...")
-                from concurrent.futures import ThreadPoolExecutor, as_completed
-                import multiprocessing
-                max_workers = min(multiprocessing.cpu_count(), len(common_metrics), 6)
-
-                def _gen_age_matrix(mn):
-                    fig = self.create_age_matrix_page(experiments, mn)
-                    clean = mn[:30] if len(mn) > 30 else mn
-                    return mn, f"Age: {clean}", fig
-
-                with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                    futures = {executor.submit(_gen_age_matrix, mn): i
-                               for i, mn in enumerate(common_metrics)}
-                    results = [None] * len(common_metrics)
-                    for future in as_completed(futures):
-                        idx = futures[future]
-                        try:
-                            results[idx] = future.result()
-                        except Exception as e:
-                            print(f"Error generating age matrix: {e}")
-                        _report(f"Generated {sum(1 for r in results if r is not None)}/{len(common_metrics)} metrics...")
-
-                for result in results:
-                    if result is not None:
-                        _, title_str, fig = result
-                        if fig is not None:
-                            pages.append((title_str, fig))
-
-        elif layout_style == "matrix":
-            # Generate matrix pages in parallel
-            _report("Generating matrix pages in parallel...")
-            from concurrent.futures import ThreadPoolExecutor, as_completed
-            import multiprocessing
+        # === Daily matrix pages (parallel) ===
+        if common_metrics:
+            _report("Generating daily matrix pages...")
             max_workers = min(multiprocessing.cpu_count(), len(common_metrics), 6)
 
             def _gen_matrix(mn):
                 fig = self.create_metric_matrix_page(experiments, mn)
                 clean = mn[:30] if len(mn) > 30 else mn
-                return mn, f"Matrix: {clean}", fig
+                return mn, f"Daily: {clean}", fig
 
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = {executor.submit(_gen_matrix, mn): i
@@ -182,38 +144,53 @@ class ConsolidationFigureGenerator:
                         results[idx] = future.result()
                     except Exception as e:
                         print(f"Error generating matrix: {e}")
-                    _report(f"Generated {sum(1 for r in results if r is not None)}/{len(common_metrics)} metrics...")
+                    _report(f"Daily matrix {sum(1 for r in results if r is not None)}/{len(common_metrics)}...")
 
             for result in results:
                 if result is not None:
                     _, title_str, fig = result
                     if fig is not None:
                         pages.append((title_str, fig))
-        elif layout_style == "classic_48h":
-            # Classic 48h layout: 3 metrics per page with 48h stacked traces (L-D-L-D)
-            metrics_per_page = 3
-            for page_idx in range(0, len(common_metrics), metrics_per_page):
-                page_metrics = common_metrics[page_idx:page_idx + metrics_per_page]
-                page_num = page_idx // metrics_per_page + 1
-                _report(f"Generating 48h traces page {page_num}...")
-                fig_traces = self.create_consolidated_traces_page_48h(experiments, page_metrics, page_num)
-                pages.append((f"Traces 48h {page_num}", fig_traces))
-        else:
-            # Classic layout: 3 metrics per page with 36h stacked traces (L-D-L)
-            metrics_per_page = 3
-            for page_idx in range(0, len(common_metrics), metrics_per_page):
-                page_metrics = common_metrics[page_idx:page_idx + metrics_per_page]
-                page_num = page_idx // metrics_per_page + 1
-                _report(f"Generating traces page {page_num}...")
-                fig_traces = self.create_consolidated_traces_page(experiments, page_metrics, page_num)
-                pages.append((f"Traces {page_num}", fig_traces))
 
-        # Final page: Statistics with error bars
+        # === Age matrix pages (if age data) ===
+        if has_age_data:
+            _report("Generating age coverage overview...")
+            fig_coverage = self.create_age_coverage_page(experiments)
+            if fig_coverage is not None:
+                pages.append(("Age Coverage", fig_coverage))
+
+            _report("Generating age matrix pages...")
+            max_workers = min(multiprocessing.cpu_count(), len(common_metrics), 6)
+
+            def _gen_age_matrix(mn):
+                fig = self.create_age_matrix_page(experiments, mn)
+                clean = mn[:30] if len(mn) > 30 else mn
+                return mn, f"Age: {clean}", fig
+
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {executor.submit(_gen_age_matrix, mn): i
+                           for i, mn in enumerate(common_metrics)}
+                results = [None] * len(common_metrics)
+                for future in as_completed(futures):
+                    idx = futures[future]
+                    try:
+                        results[idx] = future.result()
+                    except Exception as e:
+                        print(f"Error generating age matrix: {e}")
+                    _report(f"Age matrix {sum(1 for r in results if r is not None)}/{len(common_metrics)}...")
+
+            for result in results:
+                if result is not None:
+                    _, title_str, fig = result
+                    if fig is not None:
+                        pages.append((title_str, fig))
+
+        # === Statistics page ===
         _report("Generating statistics page...")
         fig_stats = self.create_statistics_page(experiments, common_metrics)
         pages.append(("Statistics", fig_stats))
 
-        # Sleep analysis page (if sleep data available)
+        # === Sleep analysis page ===
         _report("Generating sleep analysis page...")
         fig_sleep = self.create_sleep_analysis_page(experiments)
         if fig_sleep is not None:
@@ -357,7 +334,6 @@ class ConsolidationFigureGenerator:
         Shows only the grand mean (mean of all experiments' CTAs) with SEM
         shading representing variability across experiments.
         """
-        n_metrics = len(page_metrics)
         n_experiments = len(experiments)
 
         fig = Figure(figsize=(11, 8.5), dpi=self.figure_dpi, facecolor=self.BG_COLOR)
@@ -396,7 +372,6 @@ class ConsolidationFigureGenerator:
         Top: Stacked daily means as 48h rows (day N + day N+1)
         Bottom: Grand mean 48h CTA with SEM + completeness
         """
-        n_metrics = len(page_metrics)
         n_experiments = len(experiments)
 
         fig = Figure(figsize=(11, 8.5), dpi=self.figure_dpi, facecolor=self.BG_COLOR)
@@ -1301,24 +1276,28 @@ class ConsolidationFigureGenerator:
             for spine in ax_main.spines.values():
                 spine.set_color(self.GRID_COLOR)
 
-            # Right column: Per-animal 24hr CTA
+            # Right column: Per-animal 48hr CTA (double-plot L-D-L-D)
             ax_cta = fig.add_subplot(gs[row_idx, 1])
             ax_cta.set_facecolor(self.BG_COLOR)
             ax_cta.axvspan(0, 12, facecolor=self.LIGHT_PHASE_COLOR, zorder=0)
             ax_cta.axvspan(12, 24, facecolor=self.DARK_PHASE_COLOR, zorder=0)
+            ax_cta.axvspan(24, 36, facecolor=self.LIGHT_PHASE_COLOR, zorder=0)
+            ax_cta.axvspan(36, 48, facecolor=self.DARK_PHASE_COLOR, zorder=0)
+            ax_cta.axvline(x=24, color=self.GRID_COLOR, linewidth=0.5, linestyle='--', alpha=0.4, zorder=1)
 
             if animal['cta'] is not None and len(animal['cta']) == MINUTES_PER_DAY:
-                x_hours_24 = np.arange(MINUTES_PER_DAY) / 60
-                cta_smooth = self._smooth_data(animal['cta'])
-                ax_cta.plot(x_hours_24, cta_smooth, color=INDIVIDUAL_COLOR,
+                cta_48h = np.concatenate([animal['cta'], animal['cta']])
+                x_hours_48 = np.arange(len(cta_48h)) / 60
+                cta_smooth = self._smooth_data(cta_48h)
+                ax_cta.plot(x_hours_48, cta_smooth, color=INDIVIDUAL_COLOR,
                            linewidth=INDIVIDUAL_LINEWIDTH, zorder=2)
 
-            ax_cta.set_xlim(0, 24)
-            ax_cta.set_xticks([0, 12, 24])
+            ax_cta.set_xlim(0, 48)
+            ax_cta.set_xticks([0, 12, 24, 36, 48])
             if row_idx < n_trace_rows - 1:
                 ax_cta.set_xticklabels([])
             else:
-                ax_cta.set_xticklabels(['0', '12', '24'], fontsize=5)
+                ax_cta.set_xticklabels(['0', '12', '24', '36', '48'], fontsize=5)
             ax_cta.tick_params(colors=self.TEXT_COLOR, labelsize=4)
             for spine in ax_cta.spines.values():
                 spine.set_color(self.GRID_COLOR)
@@ -1387,11 +1366,14 @@ class ConsolidationFigureGenerator:
         for spine in ax_avg_main.spines.values():
             spine.set_color(self.GRID_COLOR)
 
-        # Grand CTA (right column of avg row)
+        # Grand CTA (right column of avg row) - 48hr double-plot L-D-L-D
         ax_grand_cta = fig.add_subplot(gs[row_idx, 1])
         ax_grand_cta.set_facecolor(self.BG_COLOR)
         ax_grand_cta.axvspan(0, 12, facecolor=self.LIGHT_PHASE_COLOR, zorder=0)
         ax_grand_cta.axvspan(12, 24, facecolor=self.DARK_PHASE_COLOR, zorder=0)
+        ax_grand_cta.axvspan(24, 36, facecolor=self.LIGHT_PHASE_COLOR, zorder=0)
+        ax_grand_cta.axvspan(36, 48, facecolor=self.DARK_PHASE_COLOR, zorder=0)
+        ax_grand_cta.axvline(x=24, color=self.GRID_COLOR, linewidth=0.5, linestyle='--', alpha=0.4, zorder=1)
 
         all_ctas = [a['cta'] for a in animal_data if a['cta'] is not None and len(a['cta']) == MINUTES_PER_DAY]
         if all_ctas:
@@ -1399,17 +1381,19 @@ class ConsolidationFigureGenerator:
                 warnings.simplefilter("ignore", category=RuntimeWarning)
                 grand_mean = np.nanmean(np.array(all_ctas), axis=0)
                 grand_sem = np.nanstd(np.array(all_ctas), axis=0) / np.sqrt(len(all_ctas))
-            x_hours_24 = np.arange(MINUTES_PER_DAY) / 60
-            mean_smooth = self._smooth_data(grand_mean)
-            sem_smooth = self._smooth_data(grand_sem)
-            ax_grand_cta.fill_between(x_hours_24, mean_smooth - sem_smooth, mean_smooth + sem_smooth,
+            grand_mean_48h = np.concatenate([grand_mean, grand_mean])
+            grand_sem_48h = np.concatenate([grand_sem, grand_sem])
+            x_hours_48 = np.arange(len(grand_mean_48h)) / 60
+            mean_smooth = self._smooth_data(grand_mean_48h)
+            sem_smooth = self._smooth_data(grand_sem_48h)
+            ax_grand_cta.fill_between(x_hours_48, mean_smooth - sem_smooth, mean_smooth + sem_smooth,
                                      alpha=0.3, color=AVERAGE_COLOR, zorder=2)
-            ax_grand_cta.plot(x_hours_24, mean_smooth, color=AVERAGE_COLOR,
+            ax_grand_cta.plot(x_hours_48, mean_smooth, color=AVERAGE_COLOR,
                             linewidth=AVERAGE_LINEWIDTH, zorder=3)
 
-        ax_grand_cta.set_xlim(0, 24)
-        ax_grand_cta.set_xticks([0, 12, 24])
-        ax_grand_cta.set_xticklabels(['0', '12', '24'], fontsize=6)
+        ax_grand_cta.set_xlim(0, 48)
+        ax_grand_cta.set_xticks([0, 12, 24, 36, 48])
+        ax_grand_cta.set_xticklabels(['0', '12', '24', '36', '48'], fontsize=6)
         ax_grand_cta.set_xlabel("ZT (hr)", fontsize=7, color=self.TEXT_COLOR)
         ax_grand_cta.tick_params(colors=self.TEXT_COLOR, labelsize=5)
         for spine in ax_grand_cta.spines.values():
@@ -2806,9 +2790,6 @@ class ConsolidationFigureGenerator:
                 color=self.GRID_COLOR, family='monospace', va='top')
         y_pos -= 0.03
 
-        # Key metrics (bold)
-        key_metrics = ['total_minutes', 'percent_time', 'bout_count', 'mean_duration']
-
         # Stats rows
         stats_rows = [
             ('Total Sleep (min)', 'total_minutes', False),
@@ -3248,9 +3229,9 @@ class ConsolidationFigureGenerator:
         errs = [l_sem, d_sem, t_sem]
         colors = ['#f0c040', '#4a4a4a', '#3daee9']
 
-        bars = ax.bar(x, vals, yerr=errs, color=colors, edgecolor='white',
-                     linewidth=0.3, width=0.7, capsize=2,
-                     error_kw={'ecolor': 'white', 'capthick': 0.5, 'elinewidth': 0.5})
+        ax.bar(x, vals, yerr=errs, color=colors, edgecolor='white',
+               linewidth=0.3, width=0.7, capsize=2,
+               error_kw={'ecolor': 'white', 'capthick': 0.5, 'elinewidth': 0.5})
 
         ax.set_xticks([0, 1, 2])
         ax.set_xticklabels(['L', 'D', 'T'], fontsize=5, color=self.TEXT_COLOR)
@@ -3272,9 +3253,9 @@ class ConsolidationFigureGenerator:
         errs = [l_sem, d_sem]
         colors = ['#f0c040', '#4a4a4a']
 
-        bars = ax.bar(x, vals, yerr=errs, color=colors, edgecolor='white',
-                     linewidth=0.3, width=0.6, capsize=2,
-                     error_kw={'ecolor': 'white', 'capthick': 0.5, 'elinewidth': 0.5})
+        ax.bar(x, vals, yerr=errs, color=colors, edgecolor='white',
+               linewidth=0.3, width=0.6, capsize=2,
+               error_kw={'ecolor': 'white', 'capthick': 0.5, 'elinewidth': 0.5})
 
         ax.set_xticks([0, 1])
         ax.set_xticklabels(['L', 'D'], fontsize=5, color=self.TEXT_COLOR)
@@ -3296,9 +3277,9 @@ class ConsolidationFigureGenerator:
         errs = [sem1, sem2]
         colors = ['#3daee9', '#e74c3c']
 
-        bars = ax.bar(x, vals, yerr=errs, color=colors, edgecolor='white',
-                     linewidth=0.3, width=0.6, capsize=2,
-                     error_kw={'ecolor': 'white', 'capthick': 0.5, 'elinewidth': 0.5})
+        ax.bar(x, vals, yerr=errs, color=colors, edgecolor='white',
+               linewidth=0.3, width=0.6, capsize=2,
+               error_kw={'ecolor': 'white', 'capthick': 0.5, 'elinewidth': 0.5})
 
         ax.set_xticks([0, 1])
         ax.set_xticklabels([label1, label2], fontsize=5, color=self.TEXT_COLOR)
