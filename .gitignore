@@ -57,3 +57,13 @@ run_app.bat
 # PyInstaller build artifacts
 version_info.txt
 *.spec.bak
+
+# Claude Code
+.claude/
+
+# Test pipeline (local testing only)
+test_pipeline.py
+
+# Temp/backup files
+*.tmp.*
+nul
